@@ -113,7 +113,7 @@
             
             const file = fileInput.files[0];
             const formData = new FormData();
-            formData.append('file', file); 
+            formData.append('photo', file); // Updated from 'file' to 'photo' to match Track C
 
             document.getElementById('status').innerText = "Status: Uploading to Track C API...";
 
@@ -127,7 +127,7 @@
                 if (!response.ok) throw new Error("Upload failed");
                 
                 const data = await response.json();
-                const jobId = data.id || data.job_id; 
+                const jobId = data.job_id || data.id; 
                 
                 // Start polling the status
                 pollJobStatus(jobId);
@@ -146,7 +146,8 @@
                     const res = await fetch(`http://127.0.0.1:8000/jobs/${jobId}`);
                     const jobData = await res.json();
                     
-                    if (jobData.status === "done") {
+                    // Updated from "done" to "completed" to match Track C
+                    if (jobData.status === "completed") {
                         clearInterval(interval);
                         document.getElementById('status').innerText = "Status: Done! Rendering real mesh.";
                         loadRealMesh(jobId);
