@@ -1,0 +1,8 @@
+[
+  {
+    "image_id": "hero_01_doorway",
+    "measured": 0.0, 
+    "ground_truth": 2.13, 
+    "pct_error": 0.0
+  }
+]
