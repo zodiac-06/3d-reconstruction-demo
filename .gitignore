@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Model weights & large data
+*.pth
+*.pt
+*.onnx
+models/checkpoints/
+
+# Generated jobs & outputs
+data/jobs/
+shared/sample_jobs/job_*/output/
+
+# OS / Editor artifacts
+.DS_Store
+.vscode/
+.idea/
