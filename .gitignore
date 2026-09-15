@@ -15,6 +15,9 @@ models/checkpoints/
 data/jobs/
 shared/sample_jobs/job_*/output/
 track_c_api/jobs/
+track_c_api/test_jobs/
+track_c_api/jobs_store.json
+track_c_api/test_jobs_store.json
 demo_assets/
 
 # OS / Editor artifacts

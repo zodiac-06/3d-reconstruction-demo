@@ -1,3 +1,5 @@
+import json
+import os
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -10,8 +12,15 @@ from fastapi.responses import FileResponse
 from pipeline import run_pipeline
 
 BASE_DIR = Path(__file__).resolve().parent
-JOBS_DIR = BASE_DIR / "jobs"
+
+# TRACK_C_JOBS_DIR lets verification/test runs point at an isolated directory
+# (e.g. "test_jobs") instead of the real "jobs" -- so testing never touches
+# real job data. jobs_store.json is named to match, so test runs get their
+# own store file too and never clobber the real one.
+JOBS_DIR_NAME = os.environ.get("TRACK_C_JOBS_DIR", "jobs")
+JOBS_DIR = BASE_DIR / JOBS_DIR_NAME
 JOBS_DIR.mkdir(exist_ok=True)
+JOBS_STORE_PATH = BASE_DIR / f"{JOBS_DIR_NAME}_store.json"
 
 app = FastAPI(title="Track C Calibration & Scale API")
 
@@ -24,7 +33,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-jobs = {}
+
+def _load_jobs():
+    if JOBS_STORE_PATH.exists():
+        with open(JOBS_STORE_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+def _save_jobs():
+    with open(JOBS_STORE_PATH, "w") as f:
+        json.dump(jobs, f, indent=2)
+
+
+jobs = _load_jobs()
+
+
+def _update_job(job_id: str, **fields):
+    jobs[job_id].update(fields)
+    _save_jobs()
 
 
 @app.get("/")
@@ -50,6 +77,7 @@ async def create_job(
         "result_url": None,
         "error": None,
     }
+    _save_jobs()
 
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +85,7 @@ async def create_job(
     with open(photo_path, "wb") as buffer:
         shutil.copyfileobj(photo.file, buffer)
 
-    jobs[job_id]["status"] = "running"
+    _update_job(job_id, status="running")
 
     try:
         run_pipeline(
@@ -65,13 +93,11 @@ async def create_job(
             photo_path,
             reference_length_m=reference_length_m,
             reference_axis=reference_axis,
-            progress_cb=lambda pct: jobs[job_id].update(progress=pct),
+            progress_cb=lambda pct: _update_job(job_id, progress=pct),
         )
-        jobs[job_id]["status"] = "done"
-        jobs[job_id]["result_url"] = f"/jobs/{job_id}/result"
+        _update_job(job_id, status="done", result_url=f"/jobs/{job_id}/result")
     except Exception as exc:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(exc)
+        _update_job(job_id, status="failed", error=str(exc))
 
     return jobs[job_id]
 
