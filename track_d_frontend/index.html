@@ -64,6 +64,15 @@
     <div id="ui-panel">
         <h2>Vision2Scale Viewer</h2>
         <input type="file" id="imageUpload" accept="image/png, image/jpeg">
+        <!-- Track C's POST /jobs requires a real measured reference length + which
+             bbox axis it corresponds to -- there is no default, a fabricated scale
+             factor is worse than asking the user for this. -->
+        <input type="number" id="referenceLengthM" step="0.001" min="0" placeholder="Reference length (m)" style="width: 130px;">
+        <select id="referenceAxis">
+            <option value="width" selected>width</option>
+            <option value="height">height</option>
+            <option value="depth">depth</option>
+        </select>
         <!-- Button updated to call the real API function -->
         <button onclick="startRealPipeline()">Process Image</button>
         <span id="status">Status: Waiting for upload...</span>
@@ -111,9 +120,17 @@
                 return;
             }
             
+            const referenceLengthM = document.getElementById('referenceLengthM').value;
+            if (!referenceLengthM) {
+                alert("Enter the real measured reference length (meters) first!");
+                return;
+            }
+
             const file = fileInput.files[0];
             const formData = new FormData();
             formData.append('photo', file); // Updated from 'file' to 'photo' to match Track C
+            formData.append('reference_length_m', referenceLengthM);
+            formData.append('reference_axis', document.getElementById('referenceAxis').value);
 
             document.getElementById('status').innerText = "Status: Uploading to Track C API...";
 
