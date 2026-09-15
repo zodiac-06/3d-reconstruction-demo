@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from pipeline import run_pipeline
@@ -12,6 +13,15 @@ JOBS_DIR = BASE_DIR / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Track C Calibration & Scale API")
+
+# MVP-only: Track D's viewer runs from a different local origin (or file://)
+# than this API, so the browser needs CORS headers to allow the fetch calls.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 jobs = {}
 
