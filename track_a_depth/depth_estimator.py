@@ -81,7 +81,12 @@ class DepthPipeline:
         # 3. Save depth.npy matching contract shape (H, W)
         depth_path = os.path.join(job_dir, "depth.npy")
         np.save(depth_path, depth)
-        
+
+        # 3b. Save an inferno-colormapped visualization for humans to sanity-check
+        depth_norm = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        depth_vis = cv2.applyColorMap(depth_norm, cv2.COLORMAP_INFERNO)
+        cv2.imwrite(os.path.join(job_dir, "depth_vis.png"), depth_vis)
+
         # 4. Compute and save intrinsics.json
         intrinsics = self.estimate_intrinsics(w, h)
         intrinsics_path = os.path.join(job_dir, "intrinsics.json")
