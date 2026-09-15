@@ -1,8 +1,14 @@
 [
   {
     "image_id": "hero_01_doorway",
-    "measured": 0.0, 
-    "ground_truth": 2.13, 
+    "measured": 0.0,
+    "ground_truth": 2.13,
     "pct_error": 0.0
+  },
+  {
+    "image_id": "laptop2",
+    "measured": 0.2338012343972218,
+    "ground_truth": 0.3623,
+    "pct_error": -35.46750361655484
   }
 ]
