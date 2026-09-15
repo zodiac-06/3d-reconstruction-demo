@@ -35,16 +35,16 @@ def _get_depth_and_intrinsics(job_dir: Path, photo_path: Path):
 
 
 def run_pipeline(job_dir: Path, photo_path: Path, reference_length_m: float,
-                  reference_dimension: str = "object width", progress_cb=None):
+                  reference_axis: str = "width", progress_cb=None):
     """
     Run the Track C pipeline for one job: Track A depth -> Track B reconstruction
     -> real scale computation from mesh geometry.
 
-    reference_length_m is the human-measured real-world length of some
-    dimension of the photographed object (e.g. its width) — there is no
-    default; a fabricated scale factor is worse than an explicit caller error.
-    reference_dimension names which physical dimension that is, so scale.json
-    records what was actually measured, not just that *something* was.
+    reference_length_m is the human-measured real-world length of the mesh's
+    bbox axis named by reference_axis ("width"/"height"/"depth" -> x/y/z) —
+    there is no default; a fabricated scale factor is worse than an explicit
+    caller error. The resulting scale_factor is a single uniform multiplier
+    applied to all axes, not a per-axis stretch (which would distort the mesh).
     """
     def report(pct):
         if progress_cb:
@@ -60,12 +60,12 @@ def run_pipeline(job_dir: Path, photo_path: Path, reference_length_m: float,
     mesh_path = job_dir / "mesh.obj"
     report(75)
 
-    # Step 3: real scale factor from mesh bounding-box geometry, calibrated
-    # against the real reference length the caller measured (no hardcoded values)
+    # Step 3: real scale factor from one measured bbox axis (no hardcoded values,
+    # and no longer the diagonal -- see scale.py for why that mismatched the label)
     scale, dims_m = compute_scale(
         str(job_dir),
         reference_length_m=reference_length_m,
-        reference_method=f"bbox_diagonal:{reference_dimension}",
+        reference_axis=reference_axis,
     )
     scale_obj_mesh(str(mesh_path), str(mesh_path), scale["scale_factor"])
     report(100)

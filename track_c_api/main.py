@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -35,10 +36,10 @@ def home():
 async def create_job(
     photo: UploadFile = File(...),
     reference_length_m: float = Form(
-        ..., description="Real measured length (meters) of a dimension of the photographed object"
+        ..., description="Real measured length (meters) of the mesh bbox axis named by reference_axis"
     ),
-    reference_dimension: str = Form(
-        "object width", description="Which physical dimension reference_length_m measures"
+    reference_axis: Literal["width", "height", "depth"] = Form(
+        "width", description="Which bbox axis reference_length_m measures (x/y/z respectively)"
     ),
 ):
     job_id = str(uuid4())
@@ -63,7 +64,7 @@ async def create_job(
             job_dir,
             photo_path,
             reference_length_m=reference_length_m,
-            reference_dimension=reference_dimension,
+            reference_axis=reference_axis,
             progress_cb=lambda pct: jobs[job_id].update(progress=pct),
         )
         jobs[job_id]["status"] = "done"
