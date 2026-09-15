@@ -34,10 +34,17 @@ def _get_depth_and_intrinsics(job_dir: Path, photo_path: Path):
         shutil.copy(FALLBACK_DEPTH_JOB / "intrinsics.json", job_dir / "intrinsics.json")
 
 
-def run_pipeline(job_dir: Path, photo_path: Path, progress_cb=None):
+def run_pipeline(job_dir: Path, photo_path: Path, reference_length_m: float,
+                  reference_dimension: str = "object width", progress_cb=None):
     """
     Run the Track C pipeline for one job: Track A depth -> Track B reconstruction
     -> real scale computation from mesh geometry.
+
+    reference_length_m is the human-measured real-world length of some
+    dimension of the photographed object (e.g. its width) — there is no
+    default; a fabricated scale factor is worse than an explicit caller error.
+    reference_dimension names which physical dimension that is, so scale.json
+    records what was actually measured, not just that *something* was.
     """
     def report(pct):
         if progress_cb:
@@ -53,9 +60,12 @@ def run_pipeline(job_dir: Path, photo_path: Path, progress_cb=None):
     mesh_path = job_dir / "mesh.obj"
     report(75)
 
-    # Step 3: real scale factor from mesh bounding-box geometry (no hardcoded values)
+    # Step 3: real scale factor from mesh bounding-box geometry, calibrated
+    # against the real reference length the caller measured (no hardcoded values)
     scale, dims_m = compute_scale(
-        str(job_dir), reference_length_m=1.0, reference_method="bbox_diagonal_mock"
+        str(job_dir),
+        reference_length_m=reference_length_m,
+        reference_method=f"bbox_diagonal:{reference_dimension}",
     )
     scale_obj_mesh(str(mesh_path), str(mesh_path), scale["scale_factor"])
     report(100)

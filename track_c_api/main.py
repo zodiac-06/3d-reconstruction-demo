@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -32,7 +32,15 @@ def home():
 
 
 @app.post("/jobs")
-async def create_job(photo: UploadFile = File(...)):
+async def create_job(
+    photo: UploadFile = File(...),
+    reference_length_m: float = Form(
+        ..., description="Real measured length (meters) of a dimension of the photographed object"
+    ),
+    reference_dimension: str = Form(
+        "object width", description="Which physical dimension reference_length_m measures"
+    ),
+):
     job_id = str(uuid4())
     jobs[job_id] = {
         "id": job_id,
@@ -54,6 +62,8 @@ async def create_job(photo: UploadFile = File(...)):
         run_pipeline(
             job_dir,
             photo_path,
+            reference_length_m=reference_length_m,
+            reference_dimension=reference_dimension,
             progress_cb=lambda pct: jobs[job_id].update(progress=pct),
         )
         jobs[job_id]["status"] = "done"
