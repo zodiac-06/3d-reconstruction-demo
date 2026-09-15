@@ -163,16 +163,17 @@
 
         function loadRealMesh(jobId) {
             const meshUrl = `http://127.0.0.1:8000/jobs/${jobId}/result`;
-            
+
             const loader = new THREE.OBJLoader();
             loader.load(
-                meshUrl, 
+                meshUrl,
                 function (object) {
                     // Clear the old object before adding the new one
-                    while(scene.children.length > 2){ 
-                        scene.remove(scene.children[2]); 
+                    while(scene.children.length > 2){
+                        scene.remove(scene.children[2]);
                     }
                     scene.add(object);
+                    frameObject(object);
                 },
                 function (xhr) {
                     console.log((xhr.loaded / xhr.total * 100) + '% loaded');
@@ -181,6 +182,60 @@
                     console.error('Error loading mesh from API.', error);
                 }
             );
+        }
+
+        // Fits the camera to the loaded mesh so it fills ~70% of the viewport,
+        // instead of sitting at the fixed camera.position.z = 5 default (which
+        // makes a correctly-meter-scaled real-world object look like a speck).
+        //
+        // A single vertical-FOV/bbox-diagonal estimate isn't enough: it ignores
+        // the viewport's aspect ratio and the object's actual silhouette from
+        // this specific 3/4 viewing angle (a tall-but-narrow mesh and a
+        // wide-but-flat one need different distances for the same bbox
+        // diagonal). So this projects the box corners with the real camera
+        // and iterates a few times until the worst-case screen axis hits the
+        // target fill ratio.
+        function frameObject(object) {
+            const box = new THREE.Box3().setFromObject(object);
+            if (box.isEmpty()) return;
+
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+            const direction = new THREE.Vector3(1, 0.75, 1).normalize();
+            const fitRatio = 0.7; // mesh should fill ~70% of the viewport, not 100%
+
+            camera.near = Math.max(maxDim / 100, 0.001);
+            camera.far = maxDim * 100;
+
+            const corners = [];
+            for (const x of [box.min.x, box.max.x])
+                for (const y of [box.min.y, box.max.y])
+                    for (const z of [box.min.z, box.max.z])
+                        corners.push(new THREE.Vector3(x, y, z));
+
+            const fovRad = camera.fov * (Math.PI / 180);
+            let distance = (maxDim / (2 * Math.tan(fovRad / 2))) / fitRatio;
+
+            for (let i = 0; i < 5; i++) {
+                camera.position.copy(center).addScaledVector(direction, distance);
+                camera.lookAt(center);
+                camera.updateProjectionMatrix();
+                camera.updateMatrixWorld(true);
+
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                for (const c of corners) {
+                    const p = c.clone().project(camera); // NDC: [-1, 1] spans the full viewport
+                    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+                }
+                const worstFraction = Math.max((maxX - minX) / 2, (maxY - minY) / 2);
+                if (worstFraction < 1e-6) break;
+                distance *= worstFraction / fitRatio;
+            }
+
+            controls.target.copy(center);
+            controls.update();
         }
     </script>
 </body>
