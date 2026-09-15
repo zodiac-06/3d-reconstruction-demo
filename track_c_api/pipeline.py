@@ -15,10 +15,8 @@ sys.path.insert(0, str(REPO_ROOT / "track_a_depth"))
 # run in this environment (missing torch/checkpoint/GPU) — never a fabricated number.
 FALLBACK_DEPTH_JOB = REPO_ROOT / "shared" / "sample_jobs" / "job_real_001"
 
-# Track B has no real reconstruction pipeline yet (missing pointcloud.ply and
-# back-projection/Poisson code). Stub with this placeholder mesh until that
-# track is fixed and starts producing real per-job mesh.obj/pointcloud.ply.
-STUB_MESH = BASE_DIR / "mesh.obj"
+# Track B's real reconstruction pipeline lives in the sibling track_b_mesh/ folder.
+sys.path.insert(0, str(REPO_ROOT / "track_b_mesh"))
 
 
 def _get_depth_and_intrinsics(job_dir: Path, photo_path: Path):
@@ -38,8 +36,8 @@ def _get_depth_and_intrinsics(job_dir: Path, photo_path: Path):
 
 def run_pipeline(job_dir: Path, photo_path: Path, progress_cb=None):
     """
-    Run the Track C pipeline for one job: Track A depth -> Track B mesh (stubbed
-    until that track ships) -> real scale computation from mesh geometry.
+    Run the Track C pipeline for one job: Track A depth -> Track B reconstruction
+    -> real scale computation from mesh geometry.
     """
     def report(pct):
         if progress_cb:
@@ -49,11 +47,10 @@ def run_pipeline(job_dir: Path, photo_path: Path, progress_cb=None):
     _get_depth_and_intrinsics(job_dir, photo_path)
     report(50)
 
-    # Step 2: mesh (Track B stub)
-    if not STUB_MESH.exists():
-        raise RuntimeError(f"Track B stub mesh not found at {STUB_MESH}")
+    # Step 2: real Track B reconstruction (depth+intrinsics -> pointcloud.ply + mesh.obj)
+    import reconstruct
+    reconstruct.run(str(job_dir))
     mesh_path = job_dir / "mesh.obj"
-    shutil.copy(STUB_MESH, mesh_path)
     report(75)
 
     # Step 3: real scale factor from mesh bounding-box geometry (no hardcoded values)
