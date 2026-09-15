@@ -6,9 +6,9 @@
     "pct_error": 0.0
   },
   {
-    "image_id": "laptop2",
+    "image_id": "samsung_laptop_upo",
     "measured": 0.2338012343972218,
-    "ground_truth": 0.3623,
-    "pct_error": -35.46750361655484
+    "ground_truth": 0.2291,
+    "pct_error": 2.0520446954263685
   }
 ]
