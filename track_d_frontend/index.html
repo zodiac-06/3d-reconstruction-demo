@@ -146,8 +146,7 @@
                     const res = await fetch(`http://127.0.0.1:8000/jobs/${jobId}`);
                     const jobData = await res.json();
                     
-                    // Updated from "done" to "completed" to match Track C
-                    if (jobData.status === "completed") {
+                    if (jobData.status === "done") {
                         clearInterval(interval);
                         document.getElementById('status').innerText = "Status: Done! Rendering real mesh.";
                         loadRealMesh(jobId);
