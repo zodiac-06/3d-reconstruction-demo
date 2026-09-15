@@ -15,8 +15,8 @@ class DepthPipeline:
         # Fall back to CPU automatically for Kali
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.fov_deg = fov_deg
-        self.model_path = f'checkpoints/depth_anything_v2_{encoder}.pth'
-        
+        self.model_path = self._resolve_checkpoint_path(encoder)
+
         print(f"Loading Depth Anything V2 ({encoder}) on {self.device}...")
         
         # Model configuration specific to the downloaded checkpoint
@@ -31,6 +31,21 @@ class DepthPipeline:
         state_dict = torch.load(self.model_path, map_location=self.device)
         self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device).eval()
+
+    def _resolve_checkpoint_path(self, encoder):
+        """Locate the checkpoint relative to this file (not the caller's cwd),
+        and tolerate the checked-in '.pth.1' filename alongside the expected '.pth'."""
+        base = os.path.join(os.path.dirname(__file__), 'checkpoints')
+        candidates = [
+            os.path.join(base, f'depth_anything_v2_{encoder}.pth'),
+            os.path.join(base, f'depth_anything_v2_{encoder}.pth.1'),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        raise FileNotFoundError(
+            f"No checkpoint found for encoder '{encoder}' in {base} (tried: {candidates})"
+        )
 
     def estimate_intrinsics(self, width, height):
         """Calculates pinhole camera intrinsics based on an assumed FOV."""

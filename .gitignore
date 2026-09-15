@@ -14,6 +14,7 @@ models/checkpoints/
 # Generated jobs & outputs
 data/jobs/
 shared/sample_jobs/job_*/output/
+track_c_api/jobs/
 
 # OS / Editor artifacts
 .DS_Store
