@@ -15,7 +15,7 @@ from pipeline import run_pipeline  # also puts track_a_depth/ and track_b_mesh/ 
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
-FRONTEND_DIR = REPO_ROOT / "track_d_frontend"
+FRONTEND_DIR = REPO_ROOT / "track_d_frontend" / "dist"
 
 # TRACK_C_JOBS_DIR lets verification/test runs point at an isolated directory
 # (e.g. "test_jobs") instead of the real "jobs" -- so testing never touches
@@ -149,9 +149,11 @@ def get_result(job_id: str):
     return FileResponse(mesh_path, media_type="text/plain", filename="mesh.obj")
 
 
-# Serves track_d_frontend's index.html (and any other static assets there) at
-# "/", so this one FastAPI app is the whole deployable service. Mounted last
-# so it never shadows the /jobs* and /api/* routes registered above -- FastAPI
+# Serves track_d_frontend's *built* output (dist/, from `npm run build`) at
+# "/", not the source tree -- the React/Vite app's index.html references
+# /assets/*.js /*.css bundles that only exist after a build, and its JSX
+# can't be interpreted by plain static file serving. Mounted last so it
+# never shadows the /jobs* and /api/* routes registered above -- FastAPI
 # tries routes in registration order, and a mount at "/" would otherwise
 # swallow every path.
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

@@ -23,6 +23,7 @@ demo_assets/
 # Frontend build artifacts
 node_modules/
 track_d_frontend/dist/
+track_d_frontend/.env
 
 # OS / Editor artifacts
 .DS_Store

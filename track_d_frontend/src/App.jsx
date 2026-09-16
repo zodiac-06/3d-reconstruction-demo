@@ -218,6 +218,10 @@ function App() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState([]);
   const [dragging, setDragging] = useState(false);
+  // Track C's POST /jobs requires these -- there's no default, a fabricated
+  // scale factor is worse than asking the user for the real measurement.
+  const [referenceLengthM, setReferenceLengthM] = useState("");
+  const [referenceAxis, setReferenceAxis] = useState("width");
 
   const errorPct = useMemo(
     () => percentError(Number(measured), Number(groundTruth)),
