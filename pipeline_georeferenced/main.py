@@ -10,7 +10,9 @@ run separately, ahead of time, by whoever is preparing the AOI. Uploading
 an uncropped multi-hundred-MB scene will work but will be slow and fetch
 an SRTM tile sized to match it, not to any sensible smaller area.
 
-Reuses, doesn't reimplement: track_a_depth/depth_estimator.py (unchanged),
+Reuses, doesn't reimplement: track_a_depth/depth_estimator.py (a local
+copy of the repo-root track_a_depth/, including checkpoints/, so this
+whole folder is self-contained for a Docker build -- code unchanged),
 qgis_prep/03_extract_metadata.py + 04_fetch_srtm.py (given callable entry
 points, CLI behavior unchanged), dsm_calibration/srtm_calibration.py and
 geotiff_to_viewer_assets.py (unchanged). This file is the orchestration
@@ -30,7 +32,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = BASE_DIR.parent
 
 QGIS_PREP_DIR = BASE_DIR / "qgis_prep"
 DSM_CAL_DIR = BASE_DIR / "dsm_calibration"
@@ -46,9 +47,11 @@ DSM_OUTPUT_PATH = REAL_RUN_DIR / "output_dsm.tif"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 REAL_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
-# track_a_depth/ and dsm_calibration/ have plain-identifier module names,
-# so a normal sys.path + import works for them.
-sys.path.insert(0, str(REPO_ROOT / "track_a_depth"))
+# track_a_depth/ is now a local copy inside this folder (see docstring
+# above) so this pipeline has no dependency on anything outside it -- e.g.
+# for a self-contained Docker build. It and dsm_calibration/ have
+# plain-identifier module names, so a normal sys.path + import works for them.
+sys.path.insert(0, str(BASE_DIR / "track_a_depth"))
 sys.path.insert(0, str(DSM_CAL_DIR))
 # qgis_prep/'s own scripts are numbered (03_extract_metadata.py etc) so
 # they aren't valid Python identifiers to `import` directly -- load them

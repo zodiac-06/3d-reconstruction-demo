@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime job data, not source -- regenerated per upload/run, same as
+# what's gitignored for local dev.
+qgis_prep/data/
+dsm_calibration/mock_data/
+dsm_calibration/real_run/
+jobs_meta/
+jobs_meta_store.json
