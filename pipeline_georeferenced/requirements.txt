@@ -1,0 +1,19 @@
+# Depth estimation (track_a_depth/depth_estimator.py, reused unchanged)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+opencv-python-headless
+huggingface_hub
+Pillow
+
+# Geospatial (qgis_prep/, dsm_calibration/, reused unchanged)
+rasterio
+scipy
+shapely
+requests
+numpy
+
+# API
+fastapi
+uvicorn[standard]
+python-multipart

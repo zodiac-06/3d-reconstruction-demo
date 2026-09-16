@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vision2Scale — AOI Context Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #map { position: fixed; inset: 0; }
+  .panel {
+    position: fixed; z-index: 1000; top: 16px; left: 16px;
+    background: rgba(15, 17, 21, 0.85); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px; padding: 14px 16px; color: #e8eaed;
+    max-width: 320px; box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+  }
+  .panel h1 { margin: 0 0 6px; font-size: 15px; }
+  .panel p { margin: 4px 0; font-size: 12px; color: #9aa0a6; line-height: 1.4; }
+  .panel code { color: #4fc3f7; font-size: 11px; }
+  #open-3d {
+    display: inline-block; margin-top: 10px; padding: 10px 14px;
+    background: #4fc3f7; color: #0b0c10; font-weight: 700; font-size: 13px;
+    text-decoration: none; border-radius: 6px; text-align: center; width: 100%;
+    box-sizing: border-box;
+  }
+  #open-3d:hover { background: #7bd3fa; }
+  #open-3d.disabled { background: #444; color: #999; pointer-events: none; }
+  #status { position: fixed; z-index: 1000; bottom: 16px; left: 16px; font-size: 12px; color: #ff6b6b; display: none; max-width: 420px; background: rgba(15,17,21,0.85); padding: 10px 14px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Nainital AOI — context map</h1>
+  <p id="aoi-summary">Loading real AOI bounds from <code>geo_metadata.json</code>…</p>
+  <a id="open-3d" class="disabled" href="../3d_visualization/index.html">Open 3D terrain flythrough →</a>
+</div>
+<div id="status"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  function showError(message) {
+    const el = document.getElementById('status');
+    el.textContent = message;
+    el.style.display = 'block';
+  }
+
+  const map = L.map('map', { zoomControl: true }).setView([29.38, 79.46], 12);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
+  }).addTo(map);
+
+  (async function init() {
+    try {
+      // Real AOI bounds, not hardcoded -- from Person 1's actual pipeline output.
+      const res = await fetch('../qgis_prep/data/geo_metadata.json');
+      if (!res.ok) throw new Error(`Failed to load geo_metadata.json: ${res.status} ${res.statusText}`);
+      const meta = await res.json();
+      const b = meta.bounds_epsg4326;
+      if (!b || typeof b.south !== 'number') {
+        throw new Error('geo_metadata.json is missing bounds_epsg4326');
+      }
+
+      const bounds = L.latLngBounds([b.south, b.west], [b.north, b.east]);
+
+      L.rectangle(bounds, {
+        color: '#4fc3f7',
+        weight: 2,
+        fillColor: '#4fc3f7',
+        fillOpacity: 0.12,
+      }).addTo(map);
+
+      map.fitBounds(bounds, { padding: [40, 40] });
+
+      const summary = document.getElementById('aoi-summary');
+      summary.innerHTML =
+        `Real bounding box actually processed:<br>` +
+        `<code>${b.west.toFixed(4)}, ${b.south.toFixed(4)}, ${b.east.toFixed(4)}, ${b.north.toFixed(4)}</code><br>` +
+        `(west, south, east, north — EPSG:4326)`;
+
+      document.getElementById('open-3d').classList.remove('disabled');
+    } catch (err) {
+      console.error(err);
+      showError(`Failed to load AOI metadata: ${err.message}`);
+    }
+  })();
+</script>
+</body>
+</html>
