@@ -81,6 +81,42 @@ def sample_matched_points(relative_depth, srtm_elevation, n_samples=2000, rng=No
     return depth_samples, elev_samples
 
 
+def split_points(depth_samples, elev_samples, test_fraction=0.3, rng=None):
+    """Split matched (depth, elevation) points into a fit set and a held-out
+    test set. Fitting error on the same points used to fit is optimistic
+    almost by construction (more so for a 2-parameter affine fit than it
+    might look), so it's not a number worth reporting as accuracy -- only
+    error on points the fit never saw means anything for that claim."""
+    if rng is None:
+        rng = np.random.default_rng()
+    n = len(depth_samples)
+    if n < 4:
+        raise ValueError(f"Need at least 4 matched points to hold out a test split, got {n}")
+
+    idx = rng.permutation(n)
+    n_test = max(1, int(round(n * test_fraction)))
+    n_test = min(n_test, n - 2)  # always leave >=2 points to fit on
+    test_idx, fit_idx = idx[:n_test], idx[n_test:]
+
+    return (
+        depth_samples[fit_idx], elev_samples[fit_idx],
+        depth_samples[test_idx], elev_samples[test_idx],
+    )
+
+
+def evaluate_fit(slope, intercept, depth_test, elev_test):
+    """RMSE/MAE/correlation of the fitted model on held-out points."""
+    predicted = slope * depth_test + intercept
+    residual = predicted - elev_test
+    rmse = float(np.sqrt(np.mean(residual ** 2)))
+    mae = float(np.mean(np.abs(residual)))
+    if len(elev_test) >= 2 and np.std(depth_test) > 0 and np.std(elev_test) > 0:
+        correlation = float(np.corrcoef(depth_test, elev_test)[0, 1])
+    else:
+        correlation = float("nan")
+    return {"rmse": rmse, "mae": mae, "correlation": correlation, "n_test": len(depth_test)}
+
+
 def fit_calibration(depth_samples, elevation_samples, robust=False):
     """Fit elevation = slope * depth + intercept from matched point pairs.
     Plain least-squares by default; Theil-Sen (median-of-slopes, robust to
@@ -124,23 +160,38 @@ def relative_depth_to_dsm(
     out_path,
     n_samples=2000,
     robust=False,
+    test_fraction=0.3,
     rng=None,
 ):
     """End-to-end: resample SRTM onto the depth map's grid, sample matched
-    (depth, elevation) points, fit a linear calibration, apply it across the
-    whole depth map, and write the result as a georeferenced GeoTIFF.
+    (depth, elevation) points, hold out a test_fraction of them, fit the
+    calibration on the rest, apply it across the whole depth map, and write
+    the result as a georeferenced GeoTIFF.
 
-    Returns (dsm_array, slope, intercept, n_points_used) so callers can log
-    or sanity-check the fit, not just the output raster.
+    Returns (dsm_array, slope, intercept, metrics), where metrics is a dict
+    with rmse/mae/correlation/n_test (from evaluate_fit on the held-out
+    split, NOT the points used to fit) plus n_fit -- the number that
+    actually means something for accuracy claims, since error on the
+    training points themselves is optimistic.
     """
+    if rng is None:
+        rng = np.random.default_rng()
+
     srtm_on_grid = resample_srtm_to_grid(srtm_path, dst_transform, dst_crs, relative_depth.shape)
     depth_samples, elev_samples = sample_matched_points(
         relative_depth, srtm_on_grid, n_samples=n_samples, rng=rng
     )
-    slope, intercept = fit_calibration(depth_samples, elev_samples, robust=robust)
+    depth_fit, elev_fit, depth_test, elev_test = split_points(
+        depth_samples, elev_samples, test_fraction=test_fraction, rng=rng
+    )
+
+    slope, intercept = fit_calibration(depth_fit, elev_fit, robust=robust)
+    metrics = evaluate_fit(slope, intercept, depth_test, elev_test)
+    metrics["n_fit"] = len(depth_fit)
+
     dsm = apply_calibration(relative_depth, slope, intercept)
     write_geotiff(out_path, dsm, dst_transform, dst_crs)
-    return dsm, slope, intercept, len(depth_samples)
+    return dsm, slope, intercept, metrics
 
 
 def relative_depth_to_dsm_from_geotiff(
