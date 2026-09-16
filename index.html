@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vision2Scale – Image-to-3D Reconstruction & Calibration API</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@500;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Header & Navigation -->
+    <header class="navbar">
+        <div class="container nav-container">
+            <a href="#home" class="brand-logo">
+                <div class="brand-icon">
+                    <i class="fas fa-camera-retro"></i>
+                </div>
+                <div>
+                    <div class="brand-title brand-font">VISION2SCALE</div>
+                    <div class="brand-subtitle">3D RECONSTRUCTION CALIBRATION & SCALE API</div>
+                </div>
+            </a>
+
+            <ul class="nav-links">
+                <li><a href="#home" class="active">Home</a></li>
+                <li><a href="#reconstruct-workspace">Image-to-3D</a></li>
+                <li><a href="#viewer">3D Viewer</a></li>
+                <li><a href="#calibration">Calibration</a></li>
+                <li><a href="#pipeline">Pipeline</a></li>
+                <li><a href="#api">API</a></li>
+                <li><a href="#about">About</a></li>
+            </ul>
+
+            <div class="header-actions">
+                <span class="badge badge-live">Demo Mode Active</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero-section">
+        <canvas id="hero-canvas"></canvas>
+        
+        <div class="container hero-content">
+            <div class="badge"><i class="fas fa-magic"></i> AI Photo-to-3D & Photogrammetry</div>
+            <h1 class="hero-title">Vision2Scale – <span class="text-gradient">Image to 3D</span> Reconstruction</h1>
+            <p class="hero-subtitle">Upload any 2D photo of an object to instantly generate a 3D model, calibrate real-world dimensions, and scale geometry.</p>
+            
+            <div class="hero-buttons">
+                <a href="#reconstruct-workspace" class="btn btn-primary"><i class="fas fa-upload"></i> Upload Image for 3D</a>
+                <a href="#viewer" class="btn btn-emerald"><i class="fas fa-cube"></i> Open 3D Viewer</a>
+                <a href="http://127.0.0.1:8000/docs" target="_blank" class="btn btn-outline"><i class="fas fa-code"></i> FastAPI Docs</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Main Container -->
+    <div class="container">
+        
+        <!-- Dashboard Statistics Bar -->
+        <div class="stats-bar">
+            <div class="glass-panel stat-card">
+                <div class="stat-icon"><i class="fas fa-images"></i></div>
+                <div>
+                    <div class="stat-value">1,482</div>
+                    <div class="stat-label">Images Reconstructed</div>
+                </div>
+            </div>
+
+            <div class="glass-panel stat-card">
+                <div class="stat-icon" style="color: #10b981; background: rgba(16, 185, 129, 0.1);"><i class="fas fa-bullseye"></i></div>
+                <div>
+                    <div class="stat-value text-emerald">99.8%</div>
+                    <div class="stat-label">Calibration Accuracy</div>
+                </div>
+            </div>
+
+            <div class="glass-panel stat-card">
+                <div class="stat-icon" style="color: #8b5cf6; background: rgba(139, 92, 246, 0.1);"><i class="fas fa-expand-arrows-alt"></i></div>
+                <div>
+                    <div id="stat-scale-factor" class="stat-value">2.00×</div>
+                    <div class="stat-label">Current Scale Factor</div>
+                </div>
+            </div>
+
+            <div class="glass-panel stat-card">
+                <div class="stat-icon" style="color: #f59e0b; background: rgba(245, 158, 11, 0.1);"><i class="fas fa-check-circle"></i></div>
+                <div>
+                    <div class="stat-value" style="font-size: 1.2rem; color: #10b981;">Ready</div>
+                    <div class="stat-label">Pipeline Status</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IMAGE-TO-3D RECONSTRUCTION WORKSPACE SECTION -->
+        <div id="reconstruct-workspace" class="section-header">
+            <div class="badge"><i class="fas fa-photo-video"></i> 2D to 3D Conversion</div>
+            <h2 class="section-title">Upload Image to <span class="text-gradient">Generate 3D Model</span></h2>
+            <p class="section-desc">Select a photo of any object to reconstruct its 3D mesh geometry, extract dimensions, and calibrate real-world scale.</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 40px;">
+            
+            <!-- Left Card: 2D Photo Input & Controls -->
+            <div class="glass-panel panel-card">
+                <div class="panel-header">
+                    <i class="fas fa-image panel-icon"></i>
+                    <h3 class="panel-title">2D Image Input & Keypoint Extraction</h3>
+                </div>
+
+                <!-- Drag & Drop Image Zone -->
+                <div id="image-dropzone" class="dropzone" style="padding: 20px; border-color: rgba(0, 242, 254, 0.3);">
+                    <i class="fas fa-file-image dropzone-icon"></i>
+                    <div style="font-weight: 600; font-size: 0.95rem;">Drag & Drop 2D Photo Here</div>
+                    <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;">Supports JPG, PNG, WEBP object photos</div>
+                    <input type="file" id="image-file-input" accept="image/*" style="display: none;">
+                </div>
+
+                <!-- 2D Image Preview Box -->
+                <div id="image-2d-preview-box" style="height: 280px; margin-top: 16px; background: rgba(4, 6, 12, 0.8); border-radius: 8px; border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                    <div style="text-align: center; color: var(--text-dim);">
+                        <i class="fas fa-camera" style="font-size: 2rem; margin-bottom: 8px; display: block;"></i>
+                        No image loaded yet. Upload a photo or select a sample below.
+                    </div>
+                </div>
+
+                <!-- Sample Photo Presets -->
+                <div style="margin-top: 16px;">
+                    <div class="input-label">Or Click Sample Objects to Reconstruct:</div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-outline btn-sm sample-img-btn" data-sample="turbine" style="flex: 1;"><i class="fas fa-cog"></i> Turbine</button>
+                        <button class="btn btn-outline btn-sm sample-img-btn" data-sample="component" style="flex: 1;"><i class="fas fa-cube"></i> Cube</button>
+                        <button class="btn btn-outline btn-sm sample-img-btn" data-sample="artifact" style="flex: 1;"><i class="fas fa-monument"></i> Vessel</button>
+                    </div>
+                </div>
+
+                <!-- Generate 3D CTA Button -->
+                <button id="btn-generate-3d" class="btn btn-primary" style="width: 100%; margin-top: 20px; font-size: 1.05rem;">
+                    <i class="fas fa-magic"></i> Generate 3D Model from Image
+                </button>
+                <div id="reconstruct-status-text" style="font-size: 0.8rem; color: #00f2fe; text-align: center; margin-top: 8px; font-family: var(--font-code);"></div>
+            </div>
+
+            <!-- Right Card: 3D Reconstructed Mesh Preview -->
+            <div class="glass-panel panel-card">
+                <div class="panel-header">
+                    <i class="fas fa-cube panel-icon"></i>
+                    <h3 class="panel-title">Reconstructed 3D Model Preview</h3>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+                    The 2D image depth map and feature vertices are reconstructed into a 3D geometry matrix. Scroll down to inspect in the main viewer and apply physical scale calibration.
+                </p>
+                <div style="background: rgba(4, 6, 12, 0.9); border-radius: 8px; padding: 20px; border: 1px solid var(--border-color); text-align: center;">
+                    <div class="badge badge-live" style="margin-bottom: 12px;">Interactive Three.js WebGL Engine</div>
+                    <div style="font-size: 0.9rem; color: #f1f5f9; margin-bottom: 16px;">
+                        Use mouse / touch to rotate, zoom, and pan the reconstructed 3D mesh model below.
+                    </div>
+                    <a href="#viewer" class="btn btn-emerald btn-sm"><i class="fas fa-arrows-alt"></i> Go to Full 3D Viewer & Calibration</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section Header: Interactive 3D Viewer & Calibration Workspace -->
+        <div id="viewer" class="section-header">
+            <div class="badge"><i class="fas fa-eye"></i> WebGL Visualizer</div>
+            <h2 class="section-title">Interactive <span class="text-gradient">3D Viewer & Calibration</span></h2>
+            <p class="section-desc">Rotate, zoom, and inspect your reconstructed 3D mesh while adjusting real-world physical calibration metrics.</p>
+        </div>
+
+        <div class="workspace-grid">
+            <!-- 3D Viewport Card -->
+            <div id="viewer-card-container" class="viewer-card">
+                <!-- Floating Toolbar -->
+                <div class="viewer-toolbar">
+                    <button id="tool-reset" class="tool-btn" title="Reset Camera View"><i class="fas fa-sync-alt"></i></button>
+                    <button id="tool-wireframe" class="tool-btn" title="Toggle Wireframe"><i class="fas fa-vector-square"></i></button>
+                    <button id="tool-grid" class="tool-btn active" title="Toggle Grid Floor"><i class="fas fa-border-all"></i></button>
+                    <button id="tool-axes" class="tool-btn active" title="Toggle Coordinate Axes"><i class="fas fa-arrows-alt"></i></button>
+                </div>
+
+                <!-- Floating Dimension Indicators Overlay -->
+                <div class="dimension-overlay">
+                    <div class="dim-tag"><span class="dim-axis x">X</span> Length: <span id="dim-length" style="color: #f43f5e; font-weight: 600;">2.00 m</span></div>
+                    <div class="dim-tag"><span class="dim-axis y">Y</span> Height: <span id="dim-height" style="color: #10b981; font-weight: 600;">2.00 m</span></div>
+                    <div class="dim-tag"><span class="dim-axis z">Z</span> Width: <span id="dim-width" style="color: #3b82f6; font-weight: 600;">2.00 m</span></div>
+                </div>
+
+                <!-- Three.js Canvas -->
+                <canvas id="main-3d-canvas"></canvas>
+
+                <!-- Floating Model Information Panel -->
+                <div class="floating-info-panel">
+                    <div class="info-title">
+                        <span>RECONSTRUCTED MODEL INFO</span>
+                        <i class="fas fa-info-circle"></i>
+                    </div>
+                    <div class="info-row"><span class="info-key">Vertices:</span><span id="info-vertices" class="info-val">8</span></div>
+                    <div class="info-row"><span class="info-key">Faces:</span><span id="info-faces" class="info-val">12</span></div>
+                    <div class="info-row"><span class="info-key">Source:</span><span id="info-format" class="info-val">2D Photo</span></div>
+                    <div class="info-row"><span class="info-key">Status:</span><span id="info-status" class="info-val" style="color: #10b981;">Reconstructed</span></div>
+                    <div class="info-row"><span class="info-key">Scale Factor:</span><span id="info-scale" class="info-val" style="color: #00f2fe;">1.00×</span></div>
+                    <div class="info-row"><span class="info-key">Unit:</span><span class="info-val">meters</span></div>
+                </div>
+            </div>
+
+            <!-- Sidebar Control Panels -->
+            <div id="calibration" class="control-sidebar">
+                
+                <!-- Calibration Control Card -->
+                <div class="glass-panel panel-card">
+                    <div class="panel-header">
+                        <i class="fas fa-calculator panel-icon"></i>
+                        <h3 class="panel-title">Calibration Controls</h3>
+                    </div>
+
+                    <div class="input-group">
+                        <label class="input-label" for="input-known-length">Known Real-World Length (m)</label>
+                        <input type="number" id="input-known-length" class="input-field" value="10.0" step="0.5" min="0.1">
+                    </div>
+
+                    <div class="input-group">
+                        <label class="input-label" for="input-measured-length">Measured Model Length (units)</label>
+                        <input type="number" id="input-measured-length" class="input-field" value="5.0" step="0.5" min="0.1">
+                    </div>
+
+                    <button id="btn-calc-scale" class="btn btn-outline" style="width: 100%; margin-bottom: 12px;">
+                        <i class="fas fa-calculator"></i> Calculate Scale
+                    </button>
+
+                    <!-- Scale Factor Result Display -->
+                    <div class="scale-result-box">
+                        <div class="scale-label">CALCULATED SCALE FACTOR</div>
+                        <div id="display-scale-factor" class="scale-number">2.00×</div>
+                        <div style="font-size: 0.75rem; color: #64748b; font-family: var(--font-code);">Formula: Known / Measured (10.0 / 5.0)</div>
+                    </div>
+
+                    <button id="btn-apply-scale" class="btn btn-emerald" style="width: 100%;">
+                        <i class="fas fa-expand"></i> Apply Scale to 3D Model
+                    </button>
+
+                    <button id="btn-reset-calibration" class="btn btn-outline btn-sm" style="width: 100%; margin-top: 10px; opacity: 0.7;">
+                        <i class="fas fa-undo"></i> Reset Model Scale
+                    </button>
+
+                    <!-- Before vs After Metrics Comparison -->
+                    <div class="comparison-grid">
+                        <div class="metric-card">
+                            <div class="metric-tag">BEFORE</div>
+                            <div id="before-measured" class="metric-value">5.0 units</div>
+                            <div id="before-scale" style="font-size: 0.75rem; color: #94a3b8;">Scale: 1.00×</div>
+                        </div>
+
+                        <div class="metric-card after">
+                            <div class="metric-tag">AFTER</div>
+                            <div id="after-calibrated" class="metric-value" style="color: #10b981;">10.0 m</div>
+                            <div id="after-scale" style="font-size: 0.75rem; color: #34d399;">Scale: 2.00×</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3D OBJ Direct File Upload Card -->
+                <div class="glass-panel panel-card">
+                    <div class="panel-header">
+                        <i class="fas fa-file-upload panel-icon"></i>
+                        <h3 class="panel-title">Direct 3D OBJ Upload</h3>
+                    </div>
+
+                    <div id="obj-dropzone" class="dropzone">
+                        <i class="fas fa-cloud-upload-alt dropzone-icon"></i>
+                        <div style="font-weight: 600; font-size: 0.9rem;">Drag & drop pre-existing .OBJ file</div>
+                        <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;">or click to browse local filesystem</div>
+                        <input type="file" id="obj-file-input" accept=".obj" style="display: none;">
+                    </div>
+                    <div id="upload-file-info" style="font-size: 0.78rem; color: #00f2fe; margin-top: 8px; text-align: center; font-family: var(--font-code);"></div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Calibration Pipeline Visualization Section -->
+        <div id="pipeline" class="section-header">
+            <div class="badge"><i class="fas fa-project-diagram"></i> Workflow Pipeline</div>
+            <h2 class="section-title">Reconstruction & Scale <span class="text-gradient">Pipeline</span></h2>
+            <p class="section-desc">Automated sequence for processing 2D object photos into physically verified 3D assets.</p>
+        </div>
+
+        <div class="pipeline-container">
+            <div class="glass-panel pipeline-step active">
+                <div class="step-icon-wrapper"><i class="fas fa-camera"></i></div>
+                <div class="step-num">STAGE 01</div>
+                <h4 class="step-title">2D PHOTO INPUT</h4>
+                <p class="step-desc">Upload object photograph or multi-view images</p>
+            </div>
+
+            <div class="glass-panel pipeline-step">
+                <div class="step-icon-wrapper"><i class="fas fa-project-diagram"></i></div>
+                <div class="step-num">STAGE 02</div>
+                <h4 class="step-title">3D MESH SYNTHESIS</h4>
+                <p class="step-desc">Extract feature points & compute depth field</p>
+            </div>
+
+            <div class="glass-panel pipeline-step">
+                <div class="step-icon-wrapper"><i class="fas fa-calculator"></i></div>
+                <div class="step-num">STAGE 03</div>
+                <h4 class="step-title">SCALE CALCULATION</h4>
+                <p class="step-desc">Compute ratio $S = \frac{L_{known}}{L_{measured}}$</p>
+            </div>
+
+            <div class="glass-panel pipeline-step">
+                <div class="step-icon-wrapper"><i class="fas fa-compress-arrows-alt"></i></div>
+                <div class="step-num">STAGE 04</div>
+                <h4 class="step-title">GEOMETRY SCALING</h4>
+                <p class="step-desc">Apply 4x4 scale matrix transformation</p>
+            </div>
+
+            <div class="glass-panel pipeline-step">
+                <div class="step-icon-wrapper"><i class="fas fa-check-double"></i></div>
+                <div class="step-num">STAGE 05</div>
+                <h4 class="step-title">CALIBRATED 3D MODEL</h4>
+                <p class="step-desc">Export physically accurate 3D OBJ model</p>
+            </div>
+        </div>
+
+        <!-- FastAPI REST API Section -->
+        <div id="api" class="section-header">
+            <div class="badge"><i class="fas fa-network-wired"></i> REST API Documentation</div>
+            <h2 class="section-title">Vision2Scale <span class="text-gradient">FastAPI Integration</span></h2>
+            <p class="section-desc">Connect frontend client applications to high-performance Python 3D reconstruction & calibration backends.</p>
+        </div>
+
+        <div class="api-grid">
+            <!-- Endpoint Card 1: Image Reconstruction -->
+            <div class="glass-panel api-card">
+                <span class="api-method post">POST</span>
+                <div class="api-endpoint">/reconstruct</div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">Upload 2D image photo to create a 3D reconstruction job.</p>
+
+                <div class="code-block" id="response-post-reconstruct">{
+  "job_id": "rec-9a4f21",
+  "status": "completed",
+  "input_image": "photo.jpg",
+  "output_mesh": "reconstructed_mesh.obj",
+  "vertices": 4096,
+  "confidence_score": 0.98
+}</div>
+
+                <button id="btn-test-post-reconstruct" class="btn btn-outline btn-sm"><i class="fas fa-paper-plane"></i> Test Reconstruction API</button>
+            </div>
+
+            <!-- Endpoint Card 2 -->
+            <div class="glass-panel api-card">
+                <span class="api-method post">POST</span>
+                <div class="api-endpoint">/jobs</div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">Create a physical length calibration job for a 3D mesh.</p>
+
+                <div class="code-block" id="response-post-job">{
+  "job_id": "job-8f92a10c",
+  "status": "processing",
+  "known_length": 10.0,
+  "measured_length": 5.0
+}</div>
+
+                <button id="btn-test-post-job" class="btn btn-outline btn-sm"><i class="fas fa-paper-plane"></i> Test Endpoint</button>
+            </div>
+
+            <!-- Endpoint Card 3 -->
+            <div class="glass-panel api-card">
+                <span class="api-method get">GET</span>
+                <div class="api-endpoint">/jobs/{job_id}/result</div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">Retrieve completed calibration result metrics and scaled OBJ mesh file.</p>
+
+                <div class="code-block" id="response-get-result">{
+  "job_id": "job-8f92a10c",
+  "status": "completed",
+  "scale_factor": 2.0,
+  "output_mesh": "scaled_mesh.obj",
+  "unit": "meters"
+}</div>
+
+                <button id="btn-test-get-result" class="btn btn-outline btn-sm"><i class="fas fa-paper-plane"></i> Test Endpoint</button>
+            </div>
+        </div>
+
+        <div style="text-align: center; margin-top: 32px;">
+            <a href="http://127.0.0.1:8000/docs" target="_blank" class="btn btn-primary">
+                <i class="fas fa-external-link-alt"></i> Open Interactive FastAPI Swagger Docs (127.0.0.1:8000/docs)
+            </a>
+        </div>
+
+        <!-- Project Architecture & Files Section -->
+        <div id="about" class="section-header">
+            <div class="badge"><i class="fas fa-sitemap"></i> Architecture & Module Specs</div>
+            <h2 class="section-title">System Architecture & <span class="text-gradient">Backend Structure</span></h2>
+            <p class="section-desc">Modular pipeline design allowing seamless deployment with FastAPI, PyTorch 3D, and Trimesh/Open3D backends.</p>
+        </div>
+
+        <div class="arch-grid">
+            <!-- Architecture Flowchart -->
+            <div class="glass-panel panel-card">
+                <div class="panel-header">
+                    <i class="fas fa-layer-group panel-icon"></i>
+                    <h3 class="panel-title">Pipeline Architecture Flow</h3>
+                </div>
+
+                <div style="text-align: center; padding: 20px 0;">
+                    <div class="badge" style="margin-bottom: 12px;">Web Client (HTML5 / Three.js)</div>
+                    <div style="color: var(--cyan-primary); font-size: 1.2rem;"><i class="fas fa-arrow-down"></i></div>
+                    <div class="badge badge-live" style="margin: 12px 0;">FastAPI REST Controller</div>
+                    <div style="color: var(--emerald-accent); font-size: 1.2rem;"><i class="fas fa-arrow-down"></i></div>
+                    <div class="badge" style="margin: 12px 0; background: rgba(139, 92, 246, 0.1); color: #8b5cf6; border-color: rgba(139, 92, 246, 0.3);">Image-to-3D Reconstruction AI Engine</div>
+                    <div style="color: #8b5cf6; font-size: 1.2rem;"><i class="fas fa-arrow-down"></i></div>
+                    <div class="badge" style="margin: 12px 0; background: rgba(245, 158, 11, 0.1); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);">Scale Calculator & Mesh Scaler Engine</div>
+                    <div style="color: #f59e0b; font-size: 1.2rem;"><i class="fas fa-arrow-down"></i></div>
+                    <div class="badge badge-live">Calibrated 3D OBJ Asset</div>
+                </div>
+            </div>
+
+            <!-- Backend Files Summary -->
+            <div class="glass-panel panel-card">
+                <div class="panel-header">
+                    <i class="fas fa-folder-open panel-icon"></i>
+                    <h3 class="panel-title">Backend Files Breakdown</h3>
+                </div>
+
+                <ul class="file-tree">
+                    <li class="file-item">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <div>
+                            <div class="file-name">main.py</div>
+                            <div class="file-desc">FastAPI application entry point, `/reconstruct` & `/jobs` routes, CORS setup.</div>
+                        </div>
+                    </li>
+
+                    <li class="file-item">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <div>
+                            <div class="file-name">reconstruction.py</div>
+                            <div class="file-desc">PyTorch/NeRF 3D reconstruction model extracting point clouds & 3D meshes from 2D images.</div>
+                        </div>
+                    </li>
+
+                    <li class="file-item">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <div>
+                            <div class="file-name">pipeline.py</div>
+                            <div class="file-desc">Asynchronous calibration job orchestrator and stage execution manager.</div>
+                        </div>
+                    </li>
+
+                    <li class="file-item">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <div>
+                            <div class="file-name">scale.py</div>
+                            <div class="file-desc">Scale factor solver ($Scale = Known / Measured$) with physical unit conversions.</div>
+                        </div>
+                    </li>
+
+                    <li class="file-item">
+                        <i class="fas fa-file-alt file-icon" style="color: #10b981;"></i>
+                        <div>
+                            <div class="file-name">reconstructed_mesh.obj / scaled_mesh.obj</div>
+                            <div class="file-desc">Reconstructed raw 3D model and final verified physically-calibrated 3D asset.</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Detailed About Card -->
+        <div class="glass-panel panel-card" style="margin-top: 32px;">
+            <div class="panel-header">
+                <i class="fas fa-info-circle panel-icon"></i>
+                <h3 class="panel-title">About Vision2Scale</h3>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.8;">
+                The <strong>Vision2Scale module</strong> bridges 2D computer vision and 3D physical engineering. Reconstructing 3D objects from 2D photographs (via photogrammetry or neural implicit representation) produces scale-ambiguous 3D models. Vision2Scale takes uploaded 2D object photos, synthesizes their 3D surface mesh geometry, and calculates physical scaling ratios based on real-world reference lengths.
+            </p>
+        </div>
+
+    </div>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <p>© 2026 Vision2Scale – Image-to-3D Reconstruction Calibration & Scale API. Built for modern computer vision and 3D engineering applications.</p>
+        </div>
+    </footer>
+
+    <!-- Include Three.js Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <!-- Application Scripts -->
+    <script src="js/viewer.js"></script>
+    <script src="js/calibration.js"></script>
+    <script src="js/objLoader.js"></script>
+    <script src="js/imageTo3d.js"></script>
+    <script src="js/pipeline.js"></script>
+    <script src="js/app.js"></script>
+
+</body>
+</html>
