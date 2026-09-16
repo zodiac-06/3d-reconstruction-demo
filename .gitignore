@@ -24,6 +24,9 @@ demo_assets/
 node_modules/
 track_d_frontend/dist/
 
+# Generated mock/test artifacts
+dsm_calibration/mock_data/
+
 # OS / Editor artifacts
 .DS_Store
 .vscode/
