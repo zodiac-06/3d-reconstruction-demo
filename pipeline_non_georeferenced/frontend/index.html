@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Vision2Scale — Non-Georeferenced Terrain</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #121212;
+            color: #ffffff;
+        }
+        #ui-panel {
+            padding: 16px 20px;
+            background: #1e1e1e;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            z-index: 10;
+            flex-wrap: wrap;
+        }
+        h2 { margin: 0; color: #4CAF50; font-size: 1.3rem; }
+        input[type="file"] {
+            background: #2d2d2d;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            color: #fff;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #45a049; }
+        button:disabled { background: #444; color: #999; cursor: not-allowed; }
+        #status { color: #aaa; font-style: italic; font-size: 0.9rem; }
+        #note { width: 100%; font-size: 0.75rem; color: #7a7a7a; }
+        #viewer { flex-grow: 1; width: 100%; background: radial-gradient(circle, #333 0%, #000 100%); }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h2>Depth → Terrain Viewer</h2>
+        <input type="file" id="imageUpload" accept="image/png, image/jpeg">
+        <button onclick="startPipeline()">Generate Terrain</button>
+        <span id="status">Status: Waiting for upload...</span>
+        <div id="note">No scale calibration here — relative depth used directly (no georeference, nothing real-world to calibrate against).</div>
+    </div>
+
+    <div id="viewer"></div>
+
+    <script>
+        // Scene setup -- same boilerplate pattern as track_d_frontend/index.html
+        const container = document.getElementById('viewer');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 20, 10);
+        scene.add(directionalLight);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        camera.position.z = 5;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // Same iterative bbox-fit camera framing built for track_d_frontend/
+        // 3d_visualization -- projects the real bbox corners through the
+        // real camera and converges distance so the worst-case screen axis
+        // hits ~70% fill.
+        function frameObject(object) {
+            const box = new THREE.Box3().setFromObject(object);
+            if (box.isEmpty()) return;
+
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+            const direction = new THREE.Vector3(1, 0.75, 1).normalize();
+            const fitRatio = 0.7;
+
+            camera.near = Math.max(maxDim / 100, 0.001);
+            camera.far = maxDim * 100;
+
+            const corners = [];
+            for (const x of [box.min.x, box.max.x])
+                for (const y of [box.min.y, box.max.y])
+                    for (const z of [box.min.z, box.max.z])
+                        corners.push(new THREE.Vector3(x, y, z));
+
+            const fovRad = camera.fov * (Math.PI / 180);
+            let distance = (maxDim / (2 * Math.tan(fovRad / 2))) / fitRatio;
+
+            for (let i = 0; i < 5; i++) {
+                camera.position.copy(center).addScaledVector(direction, distance);
+                camera.lookAt(center);
+                camera.updateProjectionMatrix();
+                camera.updateMatrixWorld(true);
+
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                for (const c of corners) {
+                    const p = c.clone().project(camera);
+                    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+                }
+                const worstFraction = Math.max((maxX - minX) / 2, (maxY - minY) / 2);
+                if (worstFraction < 1e-6) break;
+                distance *= worstFraction / fitRatio;
+            }
+
+            controls.target.copy(center);
+            controls.update();
+        }
+
+        let currentMesh = null;
+
+        // Terrain-style rendering instead of object rendering (adapted from
+        // 3d_visualization/terrain.js's displacement-map approach): a
+        // UV-mapped PlaneGeometry displaced by the heightmap, textured with
+        // the uploaded photo -- not an OBJLoader mesh, since there's no
+        // reconstructed 3D object here, just relative depth as a surface.
+        function buildTerrain(textureUrl, heightmapUrl) {
+            const loader = new THREE.TextureLoader();
+            Promise.all([
+                new Promise((res, rej) => loader.load(textureUrl, res, undefined, rej)),
+                new Promise((res, rej) => loader.load(heightmapUrl, res, undefined, rej)),
+            ]).then(([satTexture, demTexture]) => {
+                if (currentMesh) {
+                    scene.remove(currentMesh);
+                    currentMesh.geometry.dispose();
+                    currentMesh.material.dispose();
+                }
+
+                demTexture.colorSpace = THREE.NoColorSpace;
+
+                const imgW = satTexture.image.naturalWidth || satTexture.image.width || 1;
+                const imgH = satTexture.image.naturalHeight || satTexture.image.height || 1;
+                const aspect = imgW / imgH;
+                const baseSize = 5;
+                let planeW = baseSize, planeH = baseSize;
+                if (aspect >= 1) planeH = baseSize / aspect; else planeW = baseSize * aspect;
+
+                const geometry = new THREE.PlaneGeometry(planeW, planeH, 256, 256);
+                geometry.rotateX(-Math.PI / 2);
+
+                const material = new THREE.MeshStandardMaterial({
+                    map: satTexture,
+                    displacementMap: demTexture,
+                    displacementScale: baseSize * 0.35,
+                    displacementBias: 0,
+                    roughness: 0.9,
+                });
+
+                currentMesh = new THREE.Mesh(geometry, material);
+                scene.add(currentMesh);
+                frameObject(currentMesh);
+
+                document.getElementById('status').innerText = 'Status: Done! Rendering terrain.';
+            }).catch(err => {
+                console.error(err);
+                document.getElementById('status').innerText = `Error loading terrain textures: ${err.message || err}`;
+            });
+        }
+
+        async function startPipeline() {
+            const fileInput = document.getElementById('imageUpload');
+            if (fileInput.files.length === 0) {
+                alert("Please select an image first!");
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('photo', file);
+
+            document.getElementById('status').innerText = "Status: Uploading and running depth estimation...";
+
+            try {
+                const response = await fetch('/jobs', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error("Upload failed");
+                const data = await response.json();
+
+                if (data.status !== 'done') {
+                    document.getElementById('status').innerText = `Status: Failed - ${data.error || 'unknown error'}`;
+                    return;
+                }
+
+                buildTerrain(data.result_urls.texture, data.result_urls.heightmap);
+            } catch (error) {
+                console.error(error);
+                document.getElementById('status').innerText = "Error: Could not connect to backend API.";
+            }
+        }
+    </script>
+</body>
+</html>

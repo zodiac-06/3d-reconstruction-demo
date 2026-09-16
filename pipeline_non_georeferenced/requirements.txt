@@ -1,0 +1,13 @@
+# Depth estimation (track_a_depth/depth_estimator.py, reused unchanged)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+opencv-python-headless
+huggingface_hub
+Pillow
+numpy
+
+# API
+fastapi
+uvicorn[standard]
+python-multipart

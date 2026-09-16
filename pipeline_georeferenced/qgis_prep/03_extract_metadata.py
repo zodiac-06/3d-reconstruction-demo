@@ -26,13 +26,16 @@ SRC_PATH = os.path.join(DATA_DIR, "aoi_cropped.tif")
 OUT_PATH = os.path.join(DATA_DIR, "geo_metadata.json")
 
 
-def main():
-    with rasterio.open(SRC_PATH) as src:
+def extract_metadata(src_path=SRC_PATH, out_path=OUT_PATH):
+    """Callable entry point (pipeline_georeferenced/main.py uses this
+    directly for an uploaded GeoTIFF instead of always reading
+    data/aoi_cropped.tif)."""
+    with rasterio.open(src_path) as src:
         bounds_native = tuple(src.bounds)
         bounds_wgs84 = transform_bounds(src.crs, "EPSG:4326", *bounds_native)
 
         meta = {
-            "source_file": os.path.basename(SRC_PATH),
+            "source_file": os.path.basename(src_path),
             "crs": src.crs.to_string(),
             "crs_epsg": src.crs.to_epsg(),
             "transform": list(src.transform)[:6],  # affine a,b,c,d,e,f
@@ -56,10 +59,15 @@ def main():
             },
         }
 
-    with open(OUT_PATH, "w") as f:
+    with open(out_path, "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"Wrote {OUT_PATH}")
+    print(f"Wrote {out_path}")
+    return meta
+
+
+def main():
+    meta = extract_metadata()
     print(json.dumps(meta, indent=2))
 
 

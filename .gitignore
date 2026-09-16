@@ -25,8 +25,16 @@ node_modules/
 track_d_frontend/dist/
 
 # Generated mock/test artifacts
-dsm_calibration/mock_data/
-dsm_calibration/real_run/
+pipeline_georeferenced/dsm_calibration/mock_data/
+pipeline_georeferenced/dsm_calibration/real_run/
+
+# Pipeline runtime job data
+pipeline_non_georeferenced/jobs/
+pipeline_non_georeferenced/test_jobs/
+pipeline_non_georeferenced/jobs_store.json
+pipeline_non_georeferenced/test_jobs_store.json
+pipeline_georeferenced/jobs_meta/
+pipeline_georeferenced/jobs_meta_store.json
 
 # OS / Editor artifacts
 .DS_Store

@@ -186,10 +186,18 @@ def align_to_source(srtm_path, source_path, out_path):
     print(f"Wrote {out_path}  (SRTM resampled onto aoi_cropped.tif's grid)")
 
 
-if __name__ == "__main__":
-    bbox = get_aoi_bounds_4326()
-    api_key = os.environ.get("OPENTOPO_API_KEY")
+def fetch_srtm_for_aoi(bbox=None, cropped_path=CROPPED_PATH):
+    """Callable entry point (pipeline_georeferenced/main.py uses this
+    directly instead of shelling out to `python 04_fetch_srtm.py`).
+    bbox defaults to whatever's currently in data/geo_metadata.json (i.e.
+    whichever GeoTIFF was most recently processed by 03_extract_metadata.py)
+    -- generalized to accept an explicit (west, south, east, north) bbox
+    too, instead of only ever reading the hardcoded Nainital AOI.
+    """
+    if bbox is None:
+        bbox = get_aoi_bounds_4326()
 
+    api_key = os.environ.get("OPENTOPO_API_KEY")
     if api_key:
         try:
             fetch_via_opentopography(bbox, api_key)
@@ -200,4 +208,9 @@ if __name__ == "__main__":
         print("No OPENTOPO_API_KEY set -- using the no-auth AWS Skadi SRTM mirror.")
         fetch_via_skadi(bbox)
 
-    align_to_source(SRTM_PATH, CROPPED_PATH, SRTM_ALIGNED_PATH)
+    align_to_source(SRTM_PATH, cropped_path, SRTM_ALIGNED_PATH)
+    return SRTM_PATH, SRTM_ALIGNED_PATH
+
+
+if __name__ == "__main__":
+    fetch_srtm_for_aoi()

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vision2Scale — Georeferenced DSM Pipeline</title>
+<style>
+  html, body { margin: 0; min-height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #e8eaed; }
+  .wrap { max-width: 560px; margin: 60px auto; padding: 0 20px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #9aa0a6; font-size: 13px; margin-bottom: 24px; }
+  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 20px; }
+  .scope-note { background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.35); border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-bottom: 20px; color: #ffd54f; }
+  .scope-note strong { color: #fff; }
+  input[type="file"] { width: 100%; padding: 10px; background: #1a1c22; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: #e8eaed; margin-bottom: 14px; box-sizing: border-box; }
+  select { padding: 8px; background: #1a1c22; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: #e8eaed; margin-bottom: 14px; }
+  button { width: 100%; padding: 12px; background: #4fc3f7; color: #0b0c10; font-weight: 700; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #7bd3fa; }
+  button:disabled { background: #444; color: #999; cursor: not-allowed; }
+  #status { margin-top: 16px; font-size: 13px; color: #9aa0a6; white-space: pre-wrap; }
+  #status.error { color: #ff6b6b; }
+  #result { margin-top: 16px; display: none; }
+  #result a { display: inline-block; margin-right: 10px; margin-top: 8px; padding: 10px 16px; background: #263238; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: #4fc3f7; text-decoration: none; font-weight: 600; font-size: 13px; }
+  #result a:hover { background: #37474f; }
+  code { color: #4fc3f7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Georeferenced DSM Pipeline</h1>
+  <div class="subtitle">GeoTIFF → depth → SRTM-calibrated absolute-elevation DSM → viewable terrain</div>
+
+  <div class="scope-note">
+    <strong>Scope requirement:</strong> the uploaded GeoTIFF must already be <strong>cropped to your area of interest</strong>.
+    This pipeline does not search for scenes or crop them for you — that's a separate, earlier step
+    (see <code>qgis_prep/01_fetch_geotiff.py</code> + <code>02_crop_geotiff.py</code>, or crop by hand in QGIS).
+    Uploading an uncropped, multi-hundred-MB scene will still run, but slowly, and will fetch an SRTM
+    tile sized to match whatever area you gave it — not a sensibly small one.
+  </div>
+
+  <div class="panel">
+    <input id="file-input" type="file" accept=".tif,.tiff,image/tiff" />
+    <button id="submit-btn" onclick="submitJob()">Process GeoTIFF</button>
+    <div id="status"></div>
+    <div id="result">
+      <div id="metrics-summary"></div>
+      <a id="link-map" href="/leaflet_pitch/index.html">Open 2D context map →</a>
+      <a id="link-3d" href="/3d_visualization/index.html">Open 3D terrain flythrough →</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  async function submitJob() {
+    const fileInput = document.getElementById('file-input');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const submitBtn = document.getElementById('submit-btn');
+
+    if (!fileInput.files.length) {
+      statusEl.textContent = 'Choose a GeoTIFF first.';
+      statusEl.className = 'error';
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('geotiff', fileInput.files[0]);
+
+    submitBtn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = 'Uploading and processing (depth estimation + SRTM fetch + calibration)... this can take a little while.';
+    resultEl.style.display = 'none';
+
+    try {
+      const res = await fetch('/jobs', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (data.status !== 'done') {
+        statusEl.className = 'error';
+        statusEl.textContent = `Failed: ${data.error || 'unknown error'}`;
+        return;
+      }
+
+      const m = data.metrics;
+      statusEl.textContent = 'Done.';
+      document.getElementById('metrics-summary').innerHTML =
+        `<b>Held-out metrics</b> (test set, not training points):<br>` +
+        `RMSE: ${m.rmse.toFixed(2)}m &nbsp; MAE: ${m.mae.toFixed(2)}m &nbsp; correlation: ${m.correlation.toFixed(3)}<br>` +
+        `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}`;
+      resultEl.style.display = 'block';
+    } catch (err) {
+      statusEl.className = 'error';
+      statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+</script>
+</body>
+</html>
