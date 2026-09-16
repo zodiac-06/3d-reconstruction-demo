@@ -26,6 +26,7 @@ track_d_frontend/dist/
 
 # Generated mock/test artifacts
 dsm_calibration/mock_data/
+dsm_calibration/real_run/
 
 # OS / Editor artifacts
 .DS_Store
