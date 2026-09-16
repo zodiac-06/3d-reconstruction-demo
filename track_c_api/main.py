@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -8,10 +9,13 @@ from uuid import uuid4
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from pipeline import run_pipeline
+from pipeline import run_pipeline  # also puts track_a_depth/ and track_b_mesh/ on sys.path
 
 BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parent
+FRONTEND_DIR = REPO_ROOT / "track_d_frontend"
 
 # TRACK_C_JOBS_DIR lets verification/test runs point at an isolated directory
 # (e.g. "test_jobs") instead of the real "jobs" -- so testing never touches
@@ -22,7 +26,20 @@ JOBS_DIR = BASE_DIR / JOBS_DIR_NAME
 JOBS_DIR.mkdir(exist_ok=True)
 JOBS_STORE_PATH = BASE_DIR / f"{JOBS_DIR_NAME}_store.json"
 
-app = FastAPI(title="Track C Calibration & Scale API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Ensure the depth model checkpoint is present before accepting requests.
+    # Deploy targets (e.g. Render) check out this repo fresh and won't have
+    # the checkpoint (it's ~99MB, not something to keep in git); downloading
+    # it lazily on the first /jobs request would make that request slow and
+    # racy if concurrent requests both try to download at once.
+    from depth_estimator import ensure_checkpoint
+    ensure_checkpoint("vits")
+    yield
+
+
+app = FastAPI(title="Track C Calibration & Scale API", lifespan=lifespan)
 
 # MVP-only: Track D's viewer runs from a different local origin (or file://)
 # than this API, so the browser needs CORS headers to allow the fetch calls.
@@ -54,8 +71,8 @@ def _update_job(job_id: str, **fields):
     _save_jobs()
 
 
-@app.get("/")
-def home():
+@app.get("/api/health")
+def health():
     return {"message": "Track C API is running"}
 
 
@@ -130,3 +147,11 @@ def get_result(job_id: str):
         raise HTTPException(status_code=404, detail="Result mesh not found")
 
     return FileResponse(mesh_path, media_type="text/plain", filename="mesh.obj")
+
+
+# Serves track_d_frontend's index.html (and any other static assets there) at
+# "/", so this one FastAPI app is the whole deployable service. Mounted last
+# so it never shadows the /jobs* and /api/* routes registered above -- FastAPI
+# tries routes in registration order, and a mount at "/" would otherwise
+# swallow every path.
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

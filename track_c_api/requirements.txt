@@ -1,4 +1,20 @@
+# CPU-only torch build -- much smaller than the default CUDA-bundled wheel,
+# and this pipeline runs on CPU here regardless (no GPU on Render's web
+# service tiers). See scale.py itself for why fastapi/uvicorn/etc are still
+# needed even though this file used to only list those.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+
+# opencv-python-headless, not opencv-python: the GUI build pulls in libGL and
+# friends that typically aren't present (and aren't needed) on a headless
+# server container, and commonly fail to import there.
+opencv-python-headless
+
+huggingface_hub
+Pillow
+numpy
+
 fastapi
 uvicorn[standard]
 python-multipart
-numpy

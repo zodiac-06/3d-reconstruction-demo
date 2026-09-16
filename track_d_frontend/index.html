@@ -135,8 +135,9 @@
             document.getElementById('status').innerText = "Status: Uploading to Track C API...";
 
             try {
-                // Hit POST /jobs to create the job
-                const response = await fetch('http://127.0.0.1:8000/jobs', {
+                // Hit POST /jobs to create the job (relative -- same origin as
+                // this page once Track C mounts this frontend and serves both)
+                const response = await fetch('/jobs', {
                     method: 'POST',
                     body: formData
                 });
@@ -160,7 +161,7 @@
             
             const interval = setInterval(async () => {
                 try {
-                    const res = await fetch(`http://127.0.0.1:8000/jobs/${jobId}`);
+                    const res = await fetch(`/jobs/${jobId}`);
                     const jobData = await res.json();
                     
                     if (jobData.status === "done") {
@@ -179,7 +180,7 @@
         }
 
         function loadRealMesh(jobId) {
-            const meshUrl = `http://127.0.0.1:8000/jobs/${jobId}/result`;
+            const meshUrl = `/jobs/${jobId}/result`;
 
             const loader = new THREE.OBJLoader();
             loader.load(

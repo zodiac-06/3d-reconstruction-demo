@@ -10,6 +10,51 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Depth-Anything-V2'))
 from depth_anything_v2.dpt import DepthAnythingV2
 
+# Official Depth-Anything-V2 Hugging Face repos, one per encoder size.
+# Verified via https://huggingface.co/depth-anything/Depth-Anything-V2-Small
+# (depth_anything_v2_vits.pth, 99.2MB) -- same file this repo already has
+# checked out locally as depth_anything_v2_vits.pth.1.
+HF_REPO_BY_ENCODER = {
+    'vits': 'depth-anything/Depth-Anything-V2-Small',
+    'vitb': 'depth-anything/Depth-Anything-V2-Base',
+    'vitl': 'depth-anything/Depth-Anything-V2-Large',
+}
+
+
+def ensure_checkpoint(encoder='vits'):
+    """Download the checkpoint from the official Hugging Face repo if it isn't
+    already present locally. Deploy targets like Render check out this repo
+    fresh and won't have the (gitignored-by-size) .pth file, so this needs to
+    run once before the server starts accepting requests, not lazily on the
+    first request (which would make that request slow and racy under
+    concurrent startup traffic)."""
+    checkpoints_dir = os.path.join(os.path.dirname(__file__), 'checkpoints')
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    filename = f'depth_anything_v2_{encoder}.pth'
+    candidates = [
+        os.path.join(checkpoints_dir, filename),
+        os.path.join(checkpoints_dir, filename + '.1'),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    if encoder not in HF_REPO_BY_ENCODER:
+        raise ValueError(f"No known Hugging Face repo for encoder '{encoder}'")
+
+    from huggingface_hub import hf_hub_download
+    repo_id = HF_REPO_BY_ENCODER[encoder]
+    print(f"Checkpoint not found locally; downloading {filename} from "
+          f"https://huggingface.co/{repo_id} ...")
+    downloaded_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        local_dir=checkpoints_dir,
+    )
+    print(f"Checkpoint downloaded to {downloaded_path}")
+    return downloaded_path
+
+
 class DepthPipeline:
     def __init__(self, encoder='vits', fov_deg=65.0):
         # Fall back to CPU automatically for Kali
@@ -34,18 +79,10 @@ class DepthPipeline:
 
     def _resolve_checkpoint_path(self, encoder):
         """Locate the checkpoint relative to this file (not the caller's cwd),
-        and tolerate the checked-in '.pth.1' filename alongside the expected '.pth'."""
-        base = os.path.join(os.path.dirname(__file__), 'checkpoints')
-        candidates = [
-            os.path.join(base, f'depth_anything_v2_{encoder}.pth'),
-            os.path.join(base, f'depth_anything_v2_{encoder}.pth.1'),
-        ]
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        raise FileNotFoundError(
-            f"No checkpoint found for encoder '{encoder}' in {base} (tried: {candidates})"
-        )
+        downloading it from Hugging Face if it's missing (e.g. running the
+        standalone script directly on a fresh checkout without the API's
+        startup hook having already ensured it)."""
+        return ensure_checkpoint(encoder)
 
     def estimate_intrinsics(self, width, height):
         """Calculates pinhole camera intrinsics based on an assumed FOV."""

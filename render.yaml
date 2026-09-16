@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: track-c-api
+    runtime: python
+    plan: standard
+    # No rootDir: Render's rootDir hides everything outside it at build AND
+    # runtime, but this service imports across sibling folders at the repo
+    # root (track_a_depth/, track_b_mesh/) and serves track_d_frontend/ as
+    # static files -- all of which must stay visible. Paths below are
+    # relative to the repo root instead.
+    buildCommand: pip install -r track_c_api/requirements.txt
+    startCommand: uvicorn main:app --app-dir track_c_api --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+    healthCheckPath: /api/health
