@@ -10,6 +10,14 @@ real, visible relief (good for demonstrating a DSM/DEM output against
 SRTM) and sits entirely inside a single 1-degree SRTM tile (N29E079),
 which keeps the pipeline simple.
 
+This is the default demo AOI -- leaflet_pitch/index.html and other viewer
+pages hardcode "Nainital" in their labels, so don't swap AOI_BBOX to a
+different site without also updating those labels. For a second-landscape
+comparison test (dense urban Bangalore vs. this hilly/lake terrain), see
+the "Landscape comparison" section in README.md -- that was run by
+temporarily pointing AOI_BBOX at Bangalore, verified, and reverted here
+rather than left as the default.
+
 Coordinates are WGS84 / EPSG:4326 (lon, lat) -- the convention both the
 STAC API and OpenTopography expect.
 
