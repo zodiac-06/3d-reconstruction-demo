@@ -215,12 +215,19 @@
     if (terrain) terrain.setVerticalExaggeration(factor);
   });
 
+  // ?assets=assets_bangalore switches the whole viewer to a different
+  // pre-generated assets folder (see dsm_calibration/geotiff_to_viewer_assets.py's
+  // assets_dir param) without touching the default Nainital assets/ folder --
+  // e.g. index.html?assets=assets_bangalore for the Bangalore comparison run.
+  const assetsDir = new URLSearchParams(window.location.search).get('assets') || 'assets';
+  document.title += assetsDir === 'assets' ? '' : ` — ${assetsDir.replace('assets_', '')}`;
+
   (async function init() {
     try {
       terrain = await createTerrainMesh(
-        './assets/elevation_16bit.png',
-        './assets/metadata.json',
-        './assets/satellite.jpg',
+        `./${assetsDir}/elevation_16bit.png`,
+        `./${assetsDir}/metadata.json`,
+        `./${assetsDir}/satellite.jpg`,
         {
           baseSize: 300,
           segmentsX: 256,

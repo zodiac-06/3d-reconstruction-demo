@@ -73,10 +73,19 @@ export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl,
   geometry.rotateX(-Math.PI / 2);
   geometry.computeVertexNormals();
 
-  // 5. Calculate displacement scale normalized to world units
-  // Elevation span is mapped proportionally to the plane size (typical mountain relief ~ 10-25% of width)
-  const rawElevationRange = Math.max(1, maxElevation - minElevation);
-  const normalizedScaleFactor = (baseSize * 0.18) * (rawElevationRange / 1000); 
+  // 5. Calculate displacement scale normalized to world units.
+  // The displacement map (elevation_16bit.png) is already normalized to
+  // [0, 1] over THIS dataset's own [minElevation, maxElevation] (see
+  // geotiff_to_viewer_assets.py), so the full min-to-max relief always
+  // maps to a fixed fraction of the plane regardless of how many real
+  // meters that range spans. This keeps the exaggeration slider equally
+  // useful on a low-relief site (e.g. ~32m urban terrain) and a
+  // high-relief one (e.g. ~900m hilly terrain) -- at the cost of no
+  // longer being directly comparable in absolute terms between sites at
+  // the same slider position (a flat site and a mountainous one now look
+  // similarly "bumpy" by design, not to scale).
+  const TARGET_RELIEF_FRACTION = 0.18;
+  const normalizedScaleFactor = baseSize * TARGET_RELIEF_FRACTION;
 
   const material = new THREE.MeshStandardMaterial({
     map: satelliteTexture,
