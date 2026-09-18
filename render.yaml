@@ -1,3 +1,23 @@
+# DEPRECATED / UNUSED -- kept only as a historical record.
+#
+# This config was written for the original 4-track demo (track_a_depth/,
+# track_b_mesh/, track_c_api/, track_d_frontend/ at the repo root) and was
+# never updated for the two pipelines that superseded it
+# (pipeline_non_georeferenced/, pipeline_georeferenced/). Render itself was
+# abandoned as this project's deployment target during development, for
+# billing reasons, before that update happened -- so rewriting this to
+# target the current pipelines isn't worth doing for a platform nothing
+# here actually deploys to.
+#
+# The actual deployment path is self-hosting: each pipeline folder is a
+# self-contained FastAPI app (see pipeline_georeferenced/Dockerfile and
+# each folder's README.md for exact run commands). Point whatever
+# platform/host you use at pipeline_georeferenced/ or
+# pipeline_non_georeferenced/ directly, using their own checkpoint
+# auto-download (ensure_checkpoint()) instead of a committed binary.
+#
+# Left below unmodified as a record of the original (now-superseded) setup.
+
 services:
   - type: web
     name: track-c-api

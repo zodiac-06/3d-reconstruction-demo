@@ -27,10 +27,12 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 BASE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = BASE_DIR.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 
-sys.path.insert(0, str(REPO_ROOT / "track_a_depth"))
+# track_a_depth/ is a local copy inside this folder (see pipeline_georeferenced/
+# for the same pattern) so this pipeline has no dependency on anything
+# outside it -- e.g. for a self-contained Docker build. Code unchanged.
+sys.path.insert(0, str(BASE_DIR / "track_a_depth"))
 
 JOBS_DIR_NAME = os.environ.get("PIPELINE_JOBS_DIR", "jobs")
 JOBS_DIR = BASE_DIR / JOBS_DIR_NAME
