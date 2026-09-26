@@ -23,8 +23,20 @@ ASSETS_DIR = os.path.join(PIPELINE_ROOT, "3d_visualization", "assets")
 
 def convert_elevation(dsm_path, out_png_path):
     with rasterio.open(dsm_path) as ds:
-        arr = ds.read(1).astype(np.float64)
+        arr = ds.read(1, masked=True).astype(np.float64).filled(np.nan)
         shape = (ds.height, ds.width)
+
+    # DEM-fused DSMs can have a thin nodata rim where the ~30m DEM doesn't
+    # quite cover the crop's edge pixels. Min/max must ignore it (a -9999
+    # "minimum" would flatten the whole terrain), and the PNG has no nodata,
+    # so fill those pixels from their nearest valid neighbour.
+    invalid = ~np.isfinite(arr)
+    if invalid.all():
+        raise ValueError(f"{dsm_path} has no valid elevation pixels")
+    if invalid.any():
+        from scipy.ndimage import distance_transform_edt
+        _, (rows, cols) = distance_transform_edt(invalid, return_indices=True)
+        arr = arr[rows, cols]
 
     min_elev, max_elev = float(arr.min()), float(arr.max())
     normalized = (arr - min_elev) / max(max_elev - min_elev, 1e-9)

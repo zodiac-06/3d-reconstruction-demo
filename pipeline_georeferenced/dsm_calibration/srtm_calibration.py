@@ -211,3 +211,137 @@ def relative_depth_to_dsm_from_geotiff(
                 f"GeoTIFF shape {ref_shape} -- was the depth map run on this exact crop?"
             )
     return relative_depth_to_dsm(depth, transform, crs, srtm_path, out_path, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Terrain + detail fusion
+#
+# relative_depth_to_dsm() above calibrates relative depth straight onto SRTM,
+# so every elevation in its output comes from DA2 and SRTM is both the
+# calibration source and the only check -- circular. The functions below
+# instead take the bare-earth terrain from a DEM (FABDEM by default; see
+# qgis_prep/04_fetch_srtm.py's fetch_terrain_dem_for_aoi) and use relative
+# depth only for what the ~30m DEM can't resolve:
+#
+#     DSM = DEM + s * detail + offset
+#
+# where `detail` is relative depth, scaled to meters by the same Theil-Sen
+# fit as before, then high-pass filtered at the DEM's own resolution so it
+# doesn't re-add the terrain the DEM already has. The Theil-Sen fit and its
+# held-out metrics are still reported as a consistency check.
+# ---------------------------------------------------------------------------
+
+def fuse_terrain_and_ndsm(dem_on_grid, relative_depth, s=1.0, offset=0.0):
+    """DSM = dem_on_grid + s * relative_depth + offset.
+
+    dem_on_grid is the bare-earth terrain (meters) already resampled onto
+    relative_depth's grid; relative_depth is the calibrated, zero-mean
+    detail layer (see relative_depth_detail_layer), i.e. an nDSM-like
+    height-above-terrain term. s scales that detail; offset is a constant
+    (e.g. mean canopy height, or a vertical datum shift). NaNs in either
+    input stay NaN in the output.
+    """
+    dem_on_grid = np.asarray(dem_on_grid, dtype=np.float64)
+    relative_depth = np.asarray(relative_depth, dtype=np.float64)
+    if dem_on_grid.shape != relative_depth.shape:
+        raise ValueError(
+            f"DEM grid {dem_on_grid.shape} and relative depth {relative_depth.shape} "
+            f"must be on the same grid -- resample the DEM first"
+        )
+    return dem_on_grid + s * relative_depth + offset
+
+
+def relative_depth_detail_layer(relative_depth, sigma_px):
+    """High-pass relative_depth: subtract a Gaussian low-pass of sigma_px
+    pixels. Choose sigma_px ~ the terrain DEM's resolution in depth-map
+    pixels, so what's left is structure finer than the DEM can represent.
+    NaN-aware (normalized convolution), so voids don't bleed into their
+    neighbourhood."""
+    from scipy.ndimage import gaussian_filter
+
+    relative_depth = np.asarray(relative_depth, dtype=np.float64)
+    valid = np.isfinite(relative_depth)
+    filled = np.where(valid, relative_depth, 0.0)
+    weight = gaussian_filter(valid.astype(np.float64), sigma_px)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        lowpass = gaussian_filter(filled, sigma_px) / weight
+    return np.where(valid, relative_depth - lowpass, np.nan)
+
+
+def terrain_plus_detail_dsm(
+    relative_depth,
+    dst_transform,
+    dst_crs,
+    dem_path,
+    out_path,
+    s=1.0,
+    offset=0.0,
+    detail_sigma_m=30.0,
+    n_samples=2000,
+    test_fraction=0.3,
+    rng=None,
+):
+    """End-to-end fusion: resample the terrain DEM onto the depth map's
+    grid, Theil-Sen fit relative depth -> DEM elevation (held-out metrics
+    reported, exactly as relative_depth_to_dsm does) to put relative depth
+    in meters, high-pass it at detail_sigma_m, and write
+    DSM = DEM + s * detail + offset as a georeferenced GeoTIFF.
+
+    Returns (dsm, info). info holds the Theil-Sen slope/intercept and
+    held-out metrics (the consistency check), s, offset, the detail
+    layer's spread, and the correlation between the fused DSM and the
+    plain Theil-Sen DSM over the same pixels -- a large disagreement there
+    is worth a look before trusting either.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    dem_on_grid = resample_srtm_to_grid(dem_path, dst_transform, dst_crs, relative_depth.shape)
+    depth_samples, elev_samples = sample_matched_points(
+        relative_depth, dem_on_grid, n_samples=n_samples, rng=rng
+    )
+    depth_fit, elev_fit, depth_test, elev_test = split_points(
+        depth_samples, elev_samples, test_fraction=test_fraction, rng=rng
+    )
+    slope, intercept = fit_calibration(depth_fit, elev_fit, robust=True)
+    consistency = evaluate_fit(slope, intercept, depth_test, elev_test)
+    consistency["n_fit"] = len(depth_fit)
+
+    pixel_size_m = abs(dst_transform.a)
+    detail = relative_depth_detail_layer(slope * relative_depth, detail_sigma_m / pixel_size_m)
+    dsm = fuse_terrain_and_ndsm(dem_on_grid, detail, s=s, offset=offset)
+
+    theil_sen_dsm = apply_calibration(relative_depth, slope, intercept)
+    both = np.isfinite(dsm) & np.isfinite(theil_sen_dsm)
+    info = {
+        "theil_sen_slope": slope,
+        "theil_sen_intercept": intercept,
+        "theil_sen_heldout": consistency,
+        "s": s,
+        "offset": offset,
+        "detail_sigma_m": detail_sigma_m,
+        "detail_std_m": float(np.nanstd(detail)),
+        "corr_fused_vs_theil_sen_dsm": float(np.corrcoef(dsm[both], theil_sen_dsm[both])[0, 1]),
+    }
+
+    write_geotiff(out_path, np.where(np.isfinite(dsm), dsm, -9999), dst_transform, dst_crs,
+                  nodata=-9999)
+    return dsm, info
+
+
+def terrain_plus_detail_dsm_from_geotiff(
+    depth_npy_path, reference_geotiff_path, dem_path, out_path, **kwargs
+):
+    """terrain_plus_detail_dsm with georeference pulled from the GeoTIFF the
+    depth map was run on -- the fusion counterpart of
+    relative_depth_to_dsm_from_geotiff."""
+    depth = np.load(depth_npy_path)
+    with rasterio.open(reference_geotiff_path) as ref:
+        transform, crs = ref.transform, ref.crs
+        ref_shape = (ref.height, ref.width)
+    if ref_shape != depth.shape:
+        raise ValueError(
+            f"depth.npy shape {depth.shape} doesn't match reference "
+            f"GeoTIFF shape {ref_shape} -- was the depth map run on this exact crop?"
+        )
+    return terrain_plus_detail_dsm(depth, transform, crs, dem_path, out_path, **kwargs)

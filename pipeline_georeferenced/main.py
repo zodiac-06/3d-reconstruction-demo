@@ -1,22 +1,30 @@
 """
 Georeferenced pipeline: upload an already-cropped GeoTIFF -> real absolute-
-elevation DSM, calibrated against SRTM, viewable in both the 2D context map
-and the 3D terrain flythrough.
+elevation DSM (terrain DEM + Depth Anything detail layer; Copernicus GLO-30
+by default), viewable in both the 2D context map and the 3D terrain
+flythrough.
 
 Scope, deliberately: the uploaded GeoTIFF must already be cropped to the
 area of interest (see README.md). This pipeline does not do scene search,
 windowed download, or interactive cropping -- that's qgis_prep/01-02's job,
 run separately, ahead of time, by whoever is preparing the AOI. Uploading
 an uncropped multi-hundred-MB scene will work but will be slow and fetch
-an SRTM tile sized to match it, not to any sensible smaller area.
+a DEM sized to match it, not to any sensible smaller area.
 
 Reuses, doesn't reimplement: track_a_depth/depth_estimator.py (a local
 copy of the repo-root track_a_depth/, including checkpoints/, so this
 whole folder is self-contained for a Docker build -- code unchanged),
 qgis_prep/03_extract_metadata.py + 04_fetch_srtm.py (given callable entry
 points, CLI behavior unchanged), dsm_calibration/srtm_calibration.py and
-geotiff_to_viewer_assets.py (unchanged). This file is the orchestration
-glue between them, not a reimplementation of any of them.
+geotiff_to_viewer_assets.py. This file is the orchestration glue between
+them, not a reimplementation of any of them.
+
+Terrain DEM choice: the DEM_SOURCE env var sets the server default
+(copernicus | fabdem | srtm; default copernicus), and a `dem_source` form
+field on POST /jobs overrides it per upload. Either way the chosen source is
+tried first, then Copernicus, then SRTM (see 04_fetch_srtm.py's
+terrain_dem_sources) -- FABDEM is only used when asked for, since it's
+CC BY-NC-SA 4.0 (non-commercial).
 """
 import importlib.util
 import json
@@ -27,7 +35,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import numpy as np
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -40,7 +49,8 @@ VIZ_DIR = BASE_DIR / "3d_visualization"
 DATA_DIR = QGIS_PREP_DIR / "data"
 CROPPED_PATH = DATA_DIR / "aoi_cropped.tif"
 META_PATH = DATA_DIR / "geo_metadata.json"
-SRTM_ALIGNED_PATH = DATA_DIR / "srtm_dem_aligned.tif"
+TERRAIN_DEM_PATH = DATA_DIR / "terrain_dem.tif"
+TERRAIN_DEM_ALIGNED_PATH = DATA_DIR / "terrain_dem_aligned.tif"
 REAL_RUN_DIR = DSM_CAL_DIR / "real_run"
 DSM_OUTPUT_PATH = REAL_RUN_DIR / "output_dsm.tif"
 
@@ -71,7 +81,14 @@ extract_metadata_mod = _load_module("extract_metadata_mod", QGIS_PREP_DIR / "03_
 fetch_srtm_mod = _load_module("fetch_srtm_mod", QGIS_PREP_DIR / "04_fetch_srtm.py")
 
 from geotiff_to_viewer_assets import generate_viewer_assets  # noqa: E402
-from srtm_calibration import relative_depth_to_dsm_from_geotiff  # noqa: E402
+from srtm_calibration import terrain_plus_detail_dsm_from_geotiff  # noqa: E402
+
+DEM_SOURCE = os.environ.get("DEM_SOURCE", fetch_srtm_mod.DEFAULT_TERRAIN_DEM_SOURCE)
+fetch_srtm_mod.terrain_dem_sources(DEM_SOURCE)  # fail fast on a bad env value
+
+# Fixed seed for the Theil-Sen point sampling, so the same upload always
+# produces the same DSM (and API output can be diffed against a standalone run).
+CALIBRATION_SEED = 0
 
 JOBS_DIR_NAME = os.environ.get("PIPELINE_JOBS_DIR", "jobs_meta")
 JOBS_STORE_PATH = BASE_DIR / f"{JOBS_DIR_NAME}_store.json"
@@ -118,7 +135,15 @@ def health():
 @app.post("/jobs")
 async def create_job(
     geotiff: UploadFile = File(..., description="An already-cropped GeoTIFF -- see README.md"),
+    dem_source: str | None = Form(
+        None, description="Preferred terrain DEM: copernicus (default), fabdem, or srtm"),
 ):
+    dem_source = dem_source or DEM_SOURCE
+    try:
+        sources = fetch_srtm_mod.terrain_dem_sources(dem_source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     job_id = str(uuid4())
     jobs[job_id] = {"id": job_id, "status": "running", "error": None, "metrics": None,
                      "view_urls": None}
@@ -135,24 +160,32 @@ async def create_job(
             src_path=str(CROPPED_PATH), out_path=str(META_PATH)
         )
 
-        # 3. SRTM tile matching those exact bounds (reads them back from
+        # 3. Terrain DEM for those exact bounds (reads them back from
         #    META_PATH we just wrote -- see 04_fetch_srtm.py's
-        #    get_aoi_bounds_4326()).
-        fetch_srtm_mod.fetch_srtm_for_aoi(cropped_path=str(CROPPED_PATH))
+        #    get_aoi_bounds_4326()), preferred source first, then fallbacks.
+        dem = fetch_srtm_mod.fetch_terrain_dem_for_aoi(
+            cropped_path=str(CROPPED_PATH), sources=sources,
+            dem_path=str(TERRAIN_DEM_PATH), aligned_path=str(TERRAIN_DEM_ALIGNED_PATH),
+        )
 
         # 4. Real depth estimation on the uploaded GeoTIFF's RGB bands.
         from depth_estimator import DepthPipeline
         depth_pipeline = DepthPipeline(encoder="vits")
         depth_pipeline.process_image(str(CROPPED_PATH), str(REAL_RUN_DIR))
 
-        # 5. Calibrate relative depth -> absolute elevation against SRTM.
-        dsm, slope, intercept, metrics = relative_depth_to_dsm_from_geotiff(
+        # 5. DSM = terrain DEM + s * Depth Anything detail layer. The
+        #    Theil-Sen fit (relative depth -> DEM) inside puts the detail in
+        #    meters; its held-out metrics are a consistency check between
+        #    Depth Anything and the DEM, NOT the DSM's accuracy -- the DSM's
+        #    elevations come from the DEM (see README, "Terrain + detail
+        #    fusion", for its accuracy against ICESat-2 lidar).
+        dsm, info = terrain_plus_detail_dsm_from_geotiff(
             str(REAL_RUN_DIR / "depth.npy"),
             str(CROPPED_PATH),
-            str(SRTM_ALIGNED_PATH),
+            str(TERRAIN_DEM_PATH),
             str(DSM_OUTPUT_PATH),
             n_samples=2000,
-            robust=True,
+            rng=np.random.default_rng(CALIBRATION_SEED),
         )
 
         # 6. Convert to what the viewers actually consume (PNG/JPG + real
@@ -165,7 +198,22 @@ async def create_job(
 
         jobs[job_id].update(
             status="done",
-            metrics={"slope": slope, "intercept": intercept, **metrics},
+            metrics={
+                "method": "terrain_plus_detail",
+                "dem_source": dem["source"],
+                "dem_requested": dem_source,
+                "dem_fallback_errors": dem["failures"],
+                "vertical_datum": dem["vertical_datum"],
+                "s": info["s"],
+                "offset": info["offset"],
+                "detail_sigma_m": info["detail_sigma_m"],
+                "detail_std_m": info["detail_std_m"],
+                # Theil-Sen consistency check (Depth Anything vs. DEM, held out):
+                "slope": info["theil_sen_slope"],
+                "intercept": info["theil_sen_intercept"],
+                **info["theil_sen_heldout"],
+                "corr_fused_vs_theil_sen_dsm": info["corr_fused_vs_theil_sen_dsm"],
+            },
             view_urls={
                 "context_map": "/leaflet_pitch/index.html",
                 "terrain_3d": "/3d_visualization/index.html",

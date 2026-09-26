@@ -38,6 +38,24 @@ an OpenTopography API key is supplied. SRTM data produced by U.S. federal
 agencies is generally in the public domain within the United States;
 redistribution via the mirrors above follows their respective usage terms.
 
+## Terrain DEMs and lidar check data (`advanced-model` branch)
+
+- **FABDEM V1-2** (Hawker, L., Uhe, P., Paulo, L., et al. (2022). *A 30 m
+  global map of elevation with forests and buildings removed.* Environmental
+  Research Letters 17 024016), University of Bristol,
+  https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn — licensed
+  **CC BY-NC-SA 4.0**: **non-commercial use only**, share-alike. This is more
+  restrictive than the rest of this project. FABDEM is fetched at run time,
+  not redistributed here, but DSMs derived from it inherit its terms. For
+  commercial use, force `--dem-source copernicus`.
+- **Copernicus DEM GLO-30** — © DLR e.V. 2010-2014 and © Airbus Defence and
+  Space GmbH 2014-2018, provided under COPERNICUS by the European Union and
+  ESA; all rights reserved. Free to use under the Copernicus DEM licence;
+  fetched from the AWS Open Data mirror (`s3://copernicus-dem-30m`).
+- **ICESat-2 ATL08** (NASA / NSIDC; Neuenschwander et al.), accessed through
+  the SlideRule Earth service (https://slideruleearth.io), used only for
+  evaluation (`dsm_calibration/fetch_icesat2_truth.py`).
+
 ## Three.js
 
 The 3D terrain viewer (`pipeline_georeferenced/3d_visualization/`,

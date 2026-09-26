@@ -26,8 +26,15 @@ onto the *same grid* (CRS, transform, pixel size) as data/aoi_cropped.tif,
 so it can be compared pixel-for-pixel (RMSE/MAE) against whatever DSM/DEM
 the depth-estimation track produces from the optical image.
 
+Separately (see the "Bare-earth terrain DEM" section below), it fetches a
+terrain DEM -- Copernicus GLO-30 by default, falling back to SRTM; FABDEM
+only on request -- to data/terrain_dem.tif + data/terrain_dem_aligned.tif:
+the base layer for srtm_calibration.fuse_terrain_and_ndsm().
+
 Run:
-    python 04_fetch_srtm.py
+    python 04_fetch_srtm.py                         # SRTM + terrain DEM (Copernicus)
+    python 04_fetch_srtm.py --dem-source fabdem     # prefer another terrain source
+    python 04_fetch_srtm.py --srtm-only             # previous behaviour
 """
 import gzip
 import json
@@ -38,6 +45,7 @@ import shutil
 import numpy as np
 import rasterio
 import requests
+from rasterio.errors import RasterioIOError
 from rasterio.io import MemoryFile
 from rasterio.mask import mask
 from rasterio.merge import merge
@@ -64,7 +72,7 @@ def get_aoi_bounds_4326():
     return AOI_BBOX
 
 
-def fetch_via_opentopography(bbox, api_key):
+def fetch_via_opentopography(bbox, api_key, out_path=SRTM_PATH):
     west, south, east, north = bbox
     params = {
         "demtype": "SRTMGL1",
@@ -81,10 +89,10 @@ def fetch_via_opentopography(bbox, api_key):
         raise RuntimeError(
             f"OpenTopography request failed ({resp.status_code}): {resp.text[:300]}"
         )
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SRTM_PATH, "wb") as f:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "wb") as f:
         f.write(resp.content)
-    print(f"Wrote {SRTM_PATH}")
+    print(f"Wrote {out_path}")
 
 
 def skadi_tile_name(lat_tile, lon_tile):
@@ -93,10 +101,10 @@ def skadi_tile_name(lat_tile, lon_tile):
     return f"{lat_part}{lon_part}"
 
 
-def fetch_via_skadi(bbox):
+def fetch_via_skadi(bbox, out_path=SRTM_PATH):
     """No-auth fallback: download the 1-degree SRTM .hgt tile(s) covering
     bbox from the public AWS Open Data mirror, mosaic if needed, crop to
-    bbox, write SRTM_PATH."""
+    bbox, write out_path (SRTM_PATH by default)."""
     west, south, east, north = bbox
     lat_tiles = range(math.floor(south), math.floor(north) + 1)
     lon_tiles = range(math.floor(west), math.floor(east) + 1)
@@ -153,9 +161,9 @@ def fetch_via_skadi(bbox):
                 transform=clipped_transform,
             )
 
-    with rasterio.open(SRTM_PATH, "w", **clipped_profile) as dst:
+    with rasterio.open(out_path, "w", **clipped_profile) as dst:
         dst.write(clipped)
-    print(f"Wrote {SRTM_PATH}")
+    print(f"Wrote {out_path}")
 
 
 def align_to_source(srtm_path, source_path, out_path):
@@ -183,10 +191,11 @@ def align_to_source(srtm_path, source_path, out_path):
 
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(dst_array, 1)
-    print(f"Wrote {out_path}  (SRTM resampled onto aoi_cropped.tif's grid)")
+    print(f"Wrote {out_path}  (DEM resampled onto aoi_cropped.tif's grid)")
 
 
-def fetch_srtm_for_aoi(bbox=None, cropped_path=CROPPED_PATH):
+def fetch_srtm_for_aoi(bbox=None, cropped_path=CROPPED_PATH,
+                       srtm_path=SRTM_PATH, aligned_path=SRTM_ALIGNED_PATH):
     """Callable entry point (pipeline_georeferenced/main.py uses this
     directly instead of shelling out to `python 04_fetch_srtm.py`).
     bbox defaults to whatever's currently in data/geo_metadata.json (i.e.
@@ -197,20 +206,221 @@ def fetch_srtm_for_aoi(bbox=None, cropped_path=CROPPED_PATH):
     if bbox is None:
         bbox = get_aoi_bounds_4326()
 
+    _fetch_srtm(bbox, srtm_path)
+    align_to_source(srtm_path, cropped_path, aligned_path)
+    return srtm_path, aligned_path
+
+
+def _fetch_srtm(bbox, out_path):
     api_key = os.environ.get("OPENTOPO_API_KEY")
     if api_key:
         try:
-            fetch_via_opentopography(bbox, api_key)
+            fetch_via_opentopography(bbox, api_key, out_path=out_path)
         except Exception as e:
             print(f"OpenTopography path failed ({e}); falling back to AWS Skadi mirror.")
-            fetch_via_skadi(bbox)
+            fetch_via_skadi(bbox, out_path=out_path)
     else:
         print("No OPENTOPO_API_KEY set -- using the no-auth AWS Skadi SRTM mirror.")
-        fetch_via_skadi(bbox)
+        fetch_via_skadi(bbox, out_path=out_path)
 
-    align_to_source(SRTM_PATH, cropped_path, SRTM_ALIGNED_PATH)
-    return SRTM_PATH, SRTM_ALIGNED_PATH
+
+# ---------------------------------------------------------------------------
+# Terrain DEM (Copernicus GLO-30 -> SRTM; FABDEM on request)
+#
+# SRTM above is kept as-is for the legacy SRTM-only calibration. The terrain
+# DEM below is the base layer that srtm_calibration.fuse_terrain_and_ndsm()
+# adds relative-depth detail on top of. Default order is copernicus -> srtm:
+# the pipeline's output is a DSM, so a surface model is the right base, and
+# Copernicus is freely licensed. FABDEM is never an implicit fallback (its
+# licence is non-commercial) -- it's used only when explicitly preferred.
+# Tested on Nainital against ICESat-2 lidar (pipeline README): Copernicus
+# 14.8m RMSE vs canopy top, FABDEM 9.2m vs bare ground, SRTM ~15m.
+#
+#   fabdem      FABDEM V1-2 (Hawker et al. 2022, Univ. of Bristol): Copernicus
+#               GLO-30 with forests and buildings removed by ML -- the closest
+#               freely available thing to a global bare-earth DTM. ~30m,
+#               EGM2008 heights. Only distributed as 10x10-degree zips
+#               (~1-2.5GB each), but tiles inside are stored uncompressed, so
+#               GDAL's /vsizip//vsicurl/ reads just the AOI window via HTTP
+#               range requests -- no multi-GB download.
+#               LICENSE: CC BY-NC-SA 4.0 (non-commercial) -- unlike every other
+#               source here. See NOTICE.md.
+#   copernicus  Copernicus GLO-30 DSM (TanDEM-X, 2011-2015), public AWS Open
+#               Data COGs, no auth. ~30m, EGM2008. A *surface* model (includes
+#               canopy/buildings) -- what a DSM should be -- independent of
+#               SRTM and far newer. DEFAULT.
+#   srtm        The same SRTM path as above (EGM96). Fallback.
+#
+# Output GeoTIFFs carry DEM_SOURCE / VERTICAL_DATUM tags, because FABDEM /
+# Copernicus (EGM2008) and SRTM (EGM96) differ by a few meters in places
+# (~3m at Nainital) -- enough to matter when comparing them.
+# ---------------------------------------------------------------------------
+
+TERRAIN_DEM_PATH = os.path.join(DATA_DIR, "terrain_dem.tif")
+TERRAIN_DEM_ALIGNED_PATH = os.path.join(DATA_DIR, "terrain_dem_aligned.tif")
+
+TERRAIN_DEM_SOURCES = ("copernicus", "fabdem", "srtm")
+DEFAULT_TERRAIN_DEM_SOURCE = "copernicus"
+FALLBACK_TERRAIN_DEM_SOURCES = ("copernicus", "srtm")  # never FABDEM implicitly
+VERTICAL_DATUM = {"fabdem": "EGM2008", "copernicus": "EGM2008", "srtm": "EGM96"}
+
+FABDEM_BASE = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
+COPERNICUS_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
+
+# Don't let GDAL list the remote "directory" before every open -- on S3 /
+# the Bristol web share that's an extra slow request per tile, or a failure.
+_REMOTE_GDAL_ENV = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+                    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.zip"}
+
+
+def _lat_label(lat):
+    return f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}"
+
+
+def _lon_label(lon):
+    if lon >= 180:
+        lon -= 360
+    return f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}"
+
+
+def _one_degree_tiles(bbox):
+    west, south, east, north = bbox
+    # A bbox edge sitting exactly on a degree line shouldn't pull in the
+    # neighbouring tile (hence the tiny epsilon on the max side).
+    eps = 1e-9
+    for lat in range(math.floor(south), math.floor(north - eps) + 1):
+        for lon in range(math.floor(west), math.floor(east - eps) + 1):
+            yield lat, lon
+
+
+def fabdem_tile_path(lat, lon):
+    """GDAL virtual path to one 1-degree FABDEM tile inside its 10-degree zip,
+    e.g. N29E079 -> .../N20E070-N30E080_FABDEM_V1-2.zip/N29E079_FABDEM_V1-2.tif"""
+    lat0, lon0 = math.floor(lat / 10) * 10, math.floor(lon / 10) * 10
+    archive = (f"{_lat_label(lat0)}{_lon_label(lon0)}-"
+               f"{_lat_label(lat0 + 10)}{_lon_label(lon0 + 10)}_FABDEM_V1-2.zip")
+    tile = f"{_lat_label(lat)}{_lon_label(lon)}_FABDEM_V1-2.tif"
+    return f"/vsizip//vsicurl/{FABDEM_BASE}/{archive}/{tile}"
+
+
+def copernicus_tile_path(lat, lon):
+    """GDAL virtual path to one 1-degree Copernicus GLO-30 COG on AWS."""
+    name = f"Copernicus_DSM_COG_10_{_lat_label(lat)}_00_{_lon_label(lon)}_00_DEM"
+    return f"/vsicurl/{COPERNICUS_BASE}/{name}/{name}.tif"
+
+
+def _fetch_remote_tiles(tile_path_fn, bbox, out_path, label):
+    """Open every 1-degree tile the bbox touches (skipping ones that don't
+    exist -- ocean tiles simply aren't published), mosaic them clipped to
+    bbox, write out_path as float32 with nodata=-9999."""
+    with rasterio.Env(**_REMOTE_GDAL_ENV):
+        datasets = []
+        try:
+            for lat, lon in _one_degree_tiles(bbox):
+                path = tile_path_fn(lat, lon)
+                try:
+                    datasets.append(rasterio.open(path))
+                except RasterioIOError:
+                    print(f"  {label}: no tile at {_lat_label(lat)}{_lon_label(lon)} (skipping)")
+            if not datasets:
+                raise RuntimeError(f"{label}: no tiles available for bbox {bbox}")
+            print(f"Fetching {label} window from {len(datasets)} tile(s) (remote, windowed read)...")
+            mosaic, transform = merge(datasets, bounds=bbox, nodata=-9999, dtype="float32")
+            crs = datasets[0].crs
+        finally:
+            for ds in datasets:
+                ds.close()
+
+    if not np.isfinite(mosaic).any() or (mosaic == -9999).all():
+        raise RuntimeError(f"{label}: tiles opened but the AOI window is all nodata")
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with rasterio.open(
+        out_path, "w", driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
+        count=1, dtype="float32", crs=crs, transform=transform, nodata=-9999,
+    ) as dst:
+        dst.write(mosaic.astype("float32"))
+    print(f"Wrote {out_path}")
+
+
+def fetch_via_fabdem(bbox, out_path=TERRAIN_DEM_PATH):
+    _fetch_remote_tiles(fabdem_tile_path, bbox, out_path, "FABDEM")
+
+
+def fetch_via_copernicus(bbox, out_path=TERRAIN_DEM_PATH):
+    _fetch_remote_tiles(copernicus_tile_path, bbox, out_path, "Copernicus GLO-30")
+
+
+def _tag_dem(path, source):
+    with rasterio.open(path, "r+") as ds:
+        ds.update_tags(DEM_SOURCE=source, VERTICAL_DATUM=VERTICAL_DATUM[source])
+
+
+def terrain_dem_sources(preferred=DEFAULT_TERRAIN_DEM_SOURCE):
+    """Fetch order for a preferred source: it first, then the free-licence
+    fallbacks (Copernicus, SRTM). e.g. "fabdem" -> (fabdem, copernicus, srtm),
+    "srtm" -> (srtm, copernicus)."""
+    if preferred not in TERRAIN_DEM_SOURCES:
+        raise ValueError(f"Unknown DEM source {preferred!r}; expected one of {TERRAIN_DEM_SOURCES}")
+    return (preferred,) + tuple(s for s in FALLBACK_TERRAIN_DEM_SOURCES if s != preferred)
+
+
+def fetch_terrain_dem_for_aoi(bbox=None, cropped_path=CROPPED_PATH,
+                              sources=terrain_dem_sources(),
+                              dem_path=TERRAIN_DEM_PATH,
+                              aligned_path=TERRAIN_DEM_ALIGNED_PATH):
+    """Terrain DEM for the AOI: tries each of `sources` in order (default
+    Copernicus GLO-30 -> SRTM; see terrain_dem_sources()) and keeps the
+    first that works. Pass e.g. sources=("fabdem",) to force one with no
+    fallback.
+
+    Returns {"source", "vertical_datum", "dem_path", "aligned_path",
+    "failures": {source: error}} so callers can report which DEM they
+    actually got, and why the preferred ones were skipped.
+    """
+    if bbox is None:
+        bbox = get_aoi_bounds_4326()
+
+    fetchers = {
+        "fabdem": lambda: fetch_via_fabdem(bbox, out_path=dem_path),
+        "copernicus": lambda: fetch_via_copernicus(bbox, out_path=dem_path),
+        "srtm": lambda: _fetch_srtm(bbox, dem_path),
+    }
+    failures = {}
+    for source in sources:
+        if source not in fetchers:
+            raise ValueError(f"Unknown DEM source {source!r}; expected one of {TERRAIN_DEM_SOURCES}")
+        try:
+            fetchers[source]()
+        except Exception as e:
+            print(f"Terrain DEM source '{source}' failed ({e}); trying next.")
+            failures[source] = str(e)
+            continue
+        _tag_dem(dem_path, source)
+        align_to_source(dem_path, cropped_path, aligned_path)
+        if os.path.exists(aligned_path):
+            _tag_dem(aligned_path, source)
+        print(f"Terrain DEM source: {source} ({VERTICAL_DATUM[source]} heights)")
+        return {"source": source, "vertical_datum": VERTICAL_DATUM[source],
+                "dem_path": dem_path, "aligned_path": aligned_path, "failures": failures}
+
+    raise RuntimeError(f"No terrain DEM source succeeded: {failures}")
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--dem-source", default=DEFAULT_TERRAIN_DEM_SOURCE, choices=TERRAIN_DEM_SOURCES,
+        help="preferred terrain DEM to fetch alongside SRTM (default: copernicus); "
+             "falls back to Copernicus GLO-30, then SRTM. fabdem is "
+             "CC BY-NC-SA 4.0 (non-commercial)")
+    parser.add_argument(
+        "--srtm-only", action="store_true",
+        help="old behaviour: fetch only the SRTM calibration reference")
+    args = parser.parse_args()
+
     fetch_srtm_for_aoi()
+    if not args.srtm_only:
+        fetch_terrain_dem_for_aoi(sources=terrain_dem_sources(args.dem_source))
