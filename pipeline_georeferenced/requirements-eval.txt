@@ -1,0 +1,7 @@
+# Evaluation-only dependencies for the ICESat-2 lidar validation
+# (dsm_calibration/fetch_icesat2_truth.py, dsm_calibration/evaluate_fusion.py).
+# Not needed to run the pipeline itself; install on top of requirements.txt:
+#     pip install -r requirements.txt -r requirements-eval.txt
+pandas
+pyproj
+sliderule

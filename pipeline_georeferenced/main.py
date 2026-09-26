@@ -1,21 +1,31 @@
 """
-Georeferenced pipeline: upload an already-cropped GeoTIFF -> real absolute-
+Georeferenced pipeline: GeoTIFF for an area of interest -> real absolute-
 elevation DSM (terrain DEM + Depth Anything detail layer; Copernicus GLO-30
 by default), viewable in both the 2D context map and the 3D terrain
 flythrough.
 
-Scope, deliberately: the uploaded GeoTIFF must already be cropped to the
-area of interest (see README.md). This pipeline does not do scene search,
-windowed download, or interactive cropping -- that's qgis_prep/01-02's job,
-run separately, ahead of time, by whoever is preparing the AOI. Uploading
-an uncropped multi-hundred-MB scene will work but will be slow and fetch
-a DEM sized to match it, not to any sensible smaller area.
+Three ways to supply the AOI image to POST /jobs (see _resolve_input_mode):
+
+  cropped          `geotiff` only -- an already-cropped GeoTIFF, used as-is.
+                   The original mode; unchanged.
+  upload_and_crop  `geotiff` + bounds (west/south/east/north, EPSG:4326) --
+                   a larger scene, cropped server-side by
+                   qgis_prep/02_crop_geotiff.py's crop_geotiff().
+  fetch_by_bounds  bounds only -- the server finds the least-cloudy
+                   Sentinel-2 L2A scene via Earth Search STAC and
+                   windowed-reads it (qgis_prep/01_fetch_geotiff.py's
+                   find_scene + download_cropped, with the same buffer 01
+                   uses), then crops to the exact bounds with crop_geotiff().
+
+All three only differ in how data/aoi_cropped.tif gets written; everything
+after that (_run_pipeline: metadata -> DEM -> depth -> fusion -> viewer
+assets) is one shared code path.
 
 Reuses, doesn't reimplement: track_a_depth/depth_estimator.py (a local
 copy of the repo-root track_a_depth/, including checkpoints/, so this
 whole folder is self-contained for a Docker build -- code unchanged),
-qgis_prep/03_extract_metadata.py + 04_fetch_srtm.py (given callable entry
-points, CLI behavior unchanged), dsm_calibration/srtm_calibration.py and
+qgis_prep/01_fetch_geotiff.py, 02_crop_geotiff.py, 03_extract_metadata.py
+and 04_fetch_srtm.py (given callable entry points, CLI behavior unchanged), dsm_calibration/srtm_calibration.py and
 geotiff_to_viewer_assets.py. This file is the orchestration glue between
 them, not a reimplementation of any of them.
 
@@ -31,6 +41,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -48,6 +59,10 @@ VIZ_DIR = BASE_DIR / "3d_visualization"
 
 DATA_DIR = QGIS_PREP_DIR / "data"
 CROPPED_PATH = DATA_DIR / "aoi_cropped.tif"
+# Uncropped sources for the two bounds-based input modes. Deliberately not
+# data/raw_source.tif, which is the hand-prepared Nainital scene 01 writes.
+UPLOAD_SOURCE_PATH = DATA_DIR / "upload_source.tif"
+STAC_SOURCE_PATH = DATA_DIR / "stac_source.tif"
 META_PATH = DATA_DIR / "geo_metadata.json"
 TERRAIN_DEM_PATH = DATA_DIR / "terrain_dem.tif"
 TERRAIN_DEM_ALIGNED_PATH = DATA_DIR / "terrain_dem_aligned.tif"
@@ -77,9 +92,12 @@ def _load_module(name, path):
     return module
 
 
+fetch_geotiff_mod = _load_module("fetch_geotiff_mod", QGIS_PREP_DIR / "01_fetch_geotiff.py")
+crop_geotiff_mod = _load_module("crop_geotiff_mod", QGIS_PREP_DIR / "02_crop_geotiff.py")
 extract_metadata_mod = _load_module("extract_metadata_mod", QGIS_PREP_DIR / "03_extract_metadata.py")
 fetch_srtm_mod = _load_module("fetch_srtm_mod", QGIS_PREP_DIR / "04_fetch_srtm.py")
 
+from aoi_config import SOURCE_BUFFER_DEG  # noqa: E402
 from geotiff_to_viewer_assets import generate_viewer_assets  # noqa: E402
 from srtm_calibration import terrain_plus_detail_dsm_from_geotiff  # noqa: E402
 
@@ -89,6 +107,12 @@ fetch_srtm_mod.terrain_dem_sources(DEM_SOURCE)  # fail fast on a bad env value
 # Fixed seed for the Theil-Sen point sampling, so the same upload always
 # produces the same DSM (and API output can be diffed against a standalone run).
 CALIBRATION_SEED = 0
+
+# Largest AOI accepted for the bounds-based modes, per side, in degrees
+# (~55km). Everything runs synchronously in one request, and Depth
+# Anything / the DEM fetch scale with area -- this keeps a typo'd bbox from
+# tying the server up for minutes or pulling a whole Sentinel-2 tile.
+MAX_BOUNDS_SIDE_DEG = 0.5
 
 JOBS_DIR_NAME = os.environ.get("PIPELINE_JOBS_DIR", "jobs_meta")
 JOBS_STORE_PATH = BASE_DIR / f"{JOBS_DIR_NAME}_store.json"
@@ -132,9 +156,176 @@ def health():
     return {"message": "Georeferenced DSM pipeline is running"}
 
 
+def _tick(timings, stage):
+    """Close the currently running stage (if any) and start `stage`."""
+    now = time.perf_counter()
+    running = timings.pop("_running", None)
+    if running:
+        timings[running[0]] = round(now - running[1], 2)
+    if stage:
+        timings["_running"] = (stage, now)
+
+
+def _parse_bounds(west, south, east, north):
+    """None if no bounds were given; else a validated (w, s, e, n) tuple."""
+    values = (west, south, east, north)
+    if all(v is None for v in values):
+        return None
+    if any(v is None for v in values):
+        raise HTTPException(status_code=400, detail="Give all four bounds: west, south, east, north")
+    w, s, e, n = values
+    if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid bounds {values}: need -180 <= west < east <= 180 and "
+                   f"-90 <= south < north <= 90 (EPSG:4326 degrees)")
+    if e - w > MAX_BOUNDS_SIDE_DEG or n - s > MAX_BOUNDS_SIDE_DEG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"AOI too large ({e - w:.3f} x {n - s:.3f} deg); max "
+                   f"{MAX_BOUNDS_SIDE_DEG} deg per side")
+    return (w, s, e, n)
+
+
+def _resolve_input_mode(geotiff, bounds):
+    has_file = geotiff is not None and bool(geotiff.filename)
+    if has_file and bounds is None:
+        return "cropped"
+    if has_file:
+        return "upload_and_crop"
+    if bounds is not None:
+        return "fetch_by_bounds"
+    raise HTTPException(
+        status_code=400,
+        detail="Send a GeoTIFF, bounds (west/south/east/north), or both -- see README.md")
+
+
+def _prepare_cropped_input(mode, geotiff, bounds, timings):
+    """Write data/aoi_cropped.tif for the given input mode. Returns a dict
+    describing where it came from (stored on the job)."""
+    if mode == "cropped":
+        # Save the upload as this MVP's single current AOI (overwrite, same
+        # synchronous single-job pattern as track_c_api).
+        _tick(timings, "save_upload")
+        with open(CROPPED_PATH, "wb") as f:
+            shutil.copyfileobj(geotiff.file, f)
+        return {"filename": geotiff.filename}
+
+    if mode == "upload_and_crop":
+        _tick(timings, "save_upload")
+        with open(UPLOAD_SOURCE_PATH, "wb") as f:
+            shutil.copyfileobj(geotiff.file, f)
+        _tick(timings, "crop")
+        width, height = crop_geotiff_mod.crop_geotiff(
+            src_path=str(UPLOAD_SOURCE_PATH), out_path=str(CROPPED_PATH), bbox=bounds)
+        return {"filename": geotiff.filename, "requested_bounds": list(bounds),
+                "cropped_size_px": [width, height]}
+
+    # fetch_by_bounds: same buffered-scene-then-crop flow as running
+    # 01_fetch_geotiff.py then 02_crop_geotiff.py by hand.
+    w, s, e, n = bounds
+    b = SOURCE_BUFFER_DEG
+    buffered = (w - b, s - b, e + b, n + b)
+    _tick(timings, "stac_search")
+    scene = fetch_geotiff_mod.find_scene(buffered)
+    _tick(timings, "stac_download")
+    fetch_geotiff_mod.download_cropped(scene, buffered, out_path=str(STAC_SOURCE_PATH))
+    _tick(timings, "crop")
+    width, height = crop_geotiff_mod.crop_geotiff(
+        src_path=str(STAC_SOURCE_PATH), out_path=str(CROPPED_PATH), bbox=bounds)
+    return {
+        "requested_bounds": list(bounds),
+        "cropped_size_px": [width, height],
+        "stac_scene_id": scene["id"],
+        "scene_datetime": scene["properties"].get("datetime"),
+        "scene_cloud_cover_pct": scene["properties"].get("eo:cloud_cover"),
+    }
+
+
+def _run_pipeline(dem_source, sources, timings):
+    """Everything downstream of data/aoi_cropped.tif -- identical for all
+    three input modes."""
+    _tick(timings, "metadata")
+    # 2. Real embedded bounds, straight from the cropped GeoTIFF -- not assumed.
+    meta = extract_metadata_mod.extract_metadata(
+        src_path=str(CROPPED_PATH), out_path=str(META_PATH)
+    )
+
+    _tick(timings, "dem_fetch")
+    # 3. Terrain DEM for those exact bounds (reads them back from
+    #    META_PATH we just wrote -- see 04_fetch_srtm.py's
+    #    get_aoi_bounds_4326()), preferred source first, then fallbacks.
+    dem = fetch_srtm_mod.fetch_terrain_dem_for_aoi(
+        cropped_path=str(CROPPED_PATH), sources=sources,
+        dem_path=str(TERRAIN_DEM_PATH), aligned_path=str(TERRAIN_DEM_ALIGNED_PATH),
+    )
+
+    _tick(timings, "depth_inference")
+    # 4. Real depth estimation on the cropped GeoTIFF's RGB bands.
+    from depth_estimator import DepthPipeline
+    depth_pipeline = DepthPipeline(encoder="vits")
+    depth_pipeline.process_image(str(CROPPED_PATH), str(REAL_RUN_DIR))
+
+    _tick(timings, "fusion")
+    # 5. DSM = terrain DEM + s * Depth Anything detail layer. The
+    #    Theil-Sen fit (relative depth -> DEM) inside puts the detail in
+    #    meters; its held-out metrics are a consistency check between
+    #    Depth Anything and the DEM, NOT the DSM's accuracy -- the DSM's
+    #    elevations come from the DEM (see README, "Terrain + detail
+    #    fusion", for its accuracy against ICESat-2 lidar).
+    dsm, info = terrain_plus_detail_dsm_from_geotiff(
+        str(REAL_RUN_DIR / "depth.npy"),
+        str(CROPPED_PATH),
+        str(TERRAIN_DEM_PATH),
+        str(DSM_OUTPUT_PATH),
+        n_samples=2000,
+        rng=np.random.default_rng(CALIBRATION_SEED),
+    )
+
+    _tick(timings, "viewer_assets")
+    # 6. Convert to what the viewers actually consume (PNG/JPG + real
+    #    min/max metadata -- browsers can't load .tif as a texture).
+    generate_viewer_assets(
+        dsm_path=str(DSM_OUTPUT_PATH),
+        satellite_path=str(CROPPED_PATH),
+        assets_dir=str(VIZ_DIR / "assets"),
+    )
+    _tick(timings, None)
+
+    return dict(
+        metrics={
+            "method": "terrain_plus_detail",
+            "dem_source": dem["source"],
+            "dem_requested": dem_source,
+            "dem_fallback_errors": dem["failures"],
+            "vertical_datum": dem["vertical_datum"],
+            "s": info["s"],
+            "offset": info["offset"],
+            "detail_sigma_m": info["detail_sigma_m"],
+            "detail_std_m": info["detail_std_m"],
+            # Theil-Sen consistency check (Depth Anything vs. DEM, held out):
+            "slope": info["theil_sen_slope"],
+            "intercept": info["theil_sen_intercept"],
+            **info["theil_sen_heldout"],
+            "corr_fused_vs_theil_sen_dsm": info["corr_fused_vs_theil_sen_dsm"],
+        },
+        view_urls={
+            "context_map": "/leaflet_pitch/index.html",
+            "terrain_3d": "/3d_visualization/index.html",
+        },
+        bounds_epsg4326=meta["bounds_epsg4326"],
+    )
+
+
 @app.post("/jobs")
 async def create_job(
-    geotiff: UploadFile = File(..., description="An already-cropped GeoTIFF -- see README.md"),
+    geotiff: UploadFile | None = File(
+        None, description="A GeoTIFF: already cropped (no bounds), or a larger scene to crop "
+                          "to the bounds -- see README.md"),
+    west: float | None = Form(None, description="AOI bounds, EPSG:4326 degrees"),
+    south: float | None = Form(None),
+    east: float | None = Form(None),
+    north: float | None = Form(None),
     dem_source: str | None = Form(
         None, description="Preferred terrain DEM: copernicus (default), fabdem, or srtm"),
 ):
@@ -143,85 +334,24 @@ async def create_job(
         sources = fetch_srtm_mod.terrain_dem_sources(dem_source)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    bounds = _parse_bounds(west, south, east, north)
+    mode = _resolve_input_mode(geotiff, bounds)
 
     job_id = str(uuid4())
     jobs[job_id] = {"id": job_id, "status": "running", "error": None, "metrics": None,
-                     "view_urls": None}
+                     "view_urls": None, "input_mode": mode}
     _save_jobs()
 
+    timings = {}
+    started = time.perf_counter()
     try:
-        # 1. Save the upload as this MVP's single current AOI (overwrite,
-        #    same synchronous single-job pattern as track_c_api).
-        with open(CROPPED_PATH, "wb") as f:
-            shutil.copyfileobj(geotiff.file, f)
-
-        # 2. Real embedded bounds, straight from the upload -- not assumed.
-        meta = extract_metadata_mod.extract_metadata(
-            src_path=str(CROPPED_PATH), out_path=str(META_PATH)
-        )
-
-        # 3. Terrain DEM for those exact bounds (reads them back from
-        #    META_PATH we just wrote -- see 04_fetch_srtm.py's
-        #    get_aoi_bounds_4326()), preferred source first, then fallbacks.
-        dem = fetch_srtm_mod.fetch_terrain_dem_for_aoi(
-            cropped_path=str(CROPPED_PATH), sources=sources,
-            dem_path=str(TERRAIN_DEM_PATH), aligned_path=str(TERRAIN_DEM_ALIGNED_PATH),
-        )
-
-        # 4. Real depth estimation on the uploaded GeoTIFF's RGB bands.
-        from depth_estimator import DepthPipeline
-        depth_pipeline = DepthPipeline(encoder="vits")
-        depth_pipeline.process_image(str(CROPPED_PATH), str(REAL_RUN_DIR))
-
-        # 5. DSM = terrain DEM + s * Depth Anything detail layer. The
-        #    Theil-Sen fit (relative depth -> DEM) inside puts the detail in
-        #    meters; its held-out metrics are a consistency check between
-        #    Depth Anything and the DEM, NOT the DSM's accuracy -- the DSM's
-        #    elevations come from the DEM (see README, "Terrain + detail
-        #    fusion", for its accuracy against ICESat-2 lidar).
-        dsm, info = terrain_plus_detail_dsm_from_geotiff(
-            str(REAL_RUN_DIR / "depth.npy"),
-            str(CROPPED_PATH),
-            str(TERRAIN_DEM_PATH),
-            str(DSM_OUTPUT_PATH),
-            n_samples=2000,
-            rng=np.random.default_rng(CALIBRATION_SEED),
-        )
-
-        # 6. Convert to what the viewers actually consume (PNG/JPG + real
-        #    min/max metadata -- browsers can't load .tif as a texture).
-        generate_viewer_assets(
-            dsm_path=str(DSM_OUTPUT_PATH),
-            satellite_path=str(CROPPED_PATH),
-            assets_dir=str(VIZ_DIR / "assets"),
-        )
-
-        jobs[job_id].update(
-            status="done",
-            metrics={
-                "method": "terrain_plus_detail",
-                "dem_source": dem["source"],
-                "dem_requested": dem_source,
-                "dem_fallback_errors": dem["failures"],
-                "vertical_datum": dem["vertical_datum"],
-                "s": info["s"],
-                "offset": info["offset"],
-                "detail_sigma_m": info["detail_sigma_m"],
-                "detail_std_m": info["detail_std_m"],
-                # Theil-Sen consistency check (Depth Anything vs. DEM, held out):
-                "slope": info["theil_sen_slope"],
-                "intercept": info["theil_sen_intercept"],
-                **info["theil_sen_heldout"],
-                "corr_fused_vs_theil_sen_dsm": info["corr_fused_vs_theil_sen_dsm"],
-            },
-            view_urls={
-                "context_map": "/leaflet_pitch/index.html",
-                "terrain_3d": "/3d_visualization/index.html",
-            },
-            bounds_epsg4326=meta["bounds_epsg4326"],
-        )
+        jobs[job_id]["input"] = _prepare_cropped_input(mode, geotiff, bounds, timings)
+        jobs[job_id].update(status="done", **_run_pipeline(dem_source, sources, timings))
     except Exception as exc:
+        _tick(timings, None)
         jobs[job_id].update(status="failed", error=str(exc))
+    timings["total"] = round(time.perf_counter() - started, 2)
+    jobs[job_id]["timings_s"] = timings
 
     _save_jobs()
     return jobs[job_id]

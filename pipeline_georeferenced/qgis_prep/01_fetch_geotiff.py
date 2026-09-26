@@ -58,8 +58,10 @@ def find_scene(bbox, max_cloud=15, date_range="2025-01-01T00:00:00Z/2026-09-16T2
     return best
 
 
-def download_cropped(scene, bbox):
-    """Windowed-read the buffered AOI out of the scene's 'visual' COG asset."""
+def download_cropped(scene, bbox, out_path=OUT_PATH):
+    """Windowed-read the buffered AOI out of the scene's 'visual' COG asset.
+    out_path defaults to data/raw_source.tif (pipeline_georeferenced/main.py
+    passes its own path so a server-side fetch never overwrites that file)."""
     asset = scene["assets"].get("visual") or scene["assets"].get("tci")
     if asset is None:
         raise RuntimeError(
@@ -84,12 +86,12 @@ def download_cropped(scene, bbox):
             transform=out_transform,
         )
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    with rasterio.open(OUT_PATH, "w", **profile) as dst:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(data)
 
     print(
-        f"Wrote {OUT_PATH}  ({data.shape[2]}x{data.shape[1]} px, "
+        f"Wrote {out_path}  ({data.shape[2]}x{data.shape[1]} px, "
         f"CRS {profile['crs']})"
     )
 

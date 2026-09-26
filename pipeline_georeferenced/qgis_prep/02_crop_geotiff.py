@@ -21,9 +21,19 @@ SRC_PATH = os.path.join(DATA_DIR, "raw_source.tif")
 OUT_PATH = os.path.join(DATA_DIR, "aoi_cropped.tif")
 
 
-def main():
-    with rasterio.open(SRC_PATH) as src:
-        left, bottom, right, top = transform_bounds("EPSG:4326", src.crs, *AOI_BBOX)
+def crop_geotiff(src_path=SRC_PATH, out_path=OUT_PATH, bbox=AOI_BBOX):
+    """Callable entry point (pipeline_georeferenced/main.py uses this to
+    crop an uploaded or STAC-fetched scene to user-given bounds). bbox is
+    (west, south, east, north) in EPSG:4326. Returns the output's
+    (width, height)."""
+    with rasterio.open(src_path) as src:
+        left, bottom, right, top = transform_bounds("EPSG:4326", src.crs, *bbox)
+        if (left >= src.bounds.right or right <= src.bounds.left
+                or bottom >= src.bounds.top or top <= src.bounds.bottom):
+            raise ValueError(
+                f"Bounds {tuple(bbox)} don't overlap {os.path.basename(src_path)} "
+                f"(its extent is {tuple(transform_bounds(src.crs, 'EPSG:4326', *src.bounds))})"
+            )
         window = from_bounds(left, bottom, right, top, transform=src.transform)
         data = src.read(window=window)
         out_transform = src.window_transform(window)
@@ -31,10 +41,15 @@ def main():
         profile = src.profile.copy()
         profile.update(height=data.shape[1], width=data.shape[2], transform=out_transform)
 
-    with rasterio.open(OUT_PATH, "w", **profile) as dst:
+    with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(data)
 
-    print(f"Wrote {OUT_PATH}  ({data.shape[2]}x{data.shape[1]} px, CRS {profile['crs']})")
+    print(f"Wrote {out_path}  ({data.shape[2]}x{data.shape[1]} px, CRS {profile['crs']})")
+    return data.shape[2], data.shape[1]
+
+
+def main():
+    crop_geotiff()
 
 
 if __name__ == "__main__":
