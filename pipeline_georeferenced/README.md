@@ -1,36 +1,58 @@
 # Georeferenced pipeline
 
-Upload an already-cropped GeoTIFF → absolute-elevation DSM (a terrain DEM,
-Copernicus GLO-30 by default, plus a Depth Anything V2 detail layer) →
-viewable in a 2D context map and a 3D terrain flythrough.
+A GeoTIFF for an area of interest (uploaded pre-cropped, uploaded and
+cropped server-side, or fetched from Sentinel-2 by bounds alone) →
+absolute-elevation DSM (a terrain DEM, Copernicus GLO-30 by default, plus a
+Depth Anything V2 detail layer) → viewable in a 2D context map and a 3D
+terrain flythrough.
 
 **Read "Accuracy" below before relying on the output:** the DSM's accuracy
 comes from the DEM. At Sentinel-2's 10m resolution, Depth Anything's
 contribution is measurably zero.
 
-## Scope requirement — read before uploading
+## Input modes
 
-**The uploaded GeoTIFF must already be cropped to your area of interest.**
-This pipeline does not search for scenes or crop them for you — that is a
-deliberate scope choice, not an oversight. Scene search and cropping are
-`qgis_prep/01_fetch_geotiff.py` + `02_crop_geotiff.py` (or `02_manual_qgis_crop.md`
-for the QGIS-GUI path), run separately, ahead of time, by whoever is
-preparing the AOI. This same note is shown in the upload UI itself
-(`index.html`).
+`POST /jobs` (and the upload page's mode selector) accepts the area of
+interest three ways. They differ only in how `qgis_prep/data/aoi_cropped.tif`
+gets written; everything after that is one shared code path.
 
-Uploading an uncropped, multi-hundred-MB scene will still technically run,
-but slowly, and will fetch an SRTM tile sized to whatever area you gave it —
-not a sensibly small one.
+| Mode | Send | What the server does |
+|---|---|---|
+| **Upload cropped file** (original, default) | `geotiff` | Uses it as-is. |
+| **Upload + crop by bounds** | `geotiff` + `west`, `south`, `east`, `north` | Crops the upload to the bounds with `02_crop_geotiff.crop_geotiff()`, the same code as running `02_crop_geotiff.py` by hand. |
+| **Fetch by bounds only** | `west`, `south`, `east`, `north` | Finds the least-cloudy Sentinel-2 L2A scene on Earth Search STAC and windowed-reads the bounds plus a 0.03° buffer (`01_fetch_geotiff.find_scene` / `download_cropped`, the same code as running `01_fetch_geotiff.py`), then crops to the exact bounds as above. |
+
+Bounds are EPSG:4326 degrees, at most 0.5° per side. Invalid,
+partial, or oversized bounds get a 400 before any work starts. On the upload
+page you can type the bounds or drag a box on the map. The job response
+records `input_mode`, where the image came from (`input`, including the
+STAC scene ID/date/cloud cover in fetch mode), and per-stage `timings_s`.
+
+Measured on the live server for a ~9×8km AOI (884×787 px at 10m):
+
+| Mode | Total | Where the time goes |
+|---|---|---|
+| Upload cropped file (Nainital) | 4.1s | DEM fetch 2.3s, Depth Anything 1.3s |
+| Upload + crop by bounds (Nainital, 1475×1460 px scene) | 2.1s | crop 0.1s; DEM fetch 0.2s (Copernicus tile already cached in-process) |
+| Fetch by bounds only (Nainital) | 10.6s | STAC search 0.8s, Sentinel-2 download 7.8s |
+| Fetch by bounds only (Mussoorie, nothing cached) | 16.4s | STAC search 0.8s, Sentinel-2 download 11.3s, DEM fetch 2.6s |
+
+All three Nainital runs produced byte-identical crops (to standalone
+`02_crop_geotiff.py`, and in fetch mode to the hand-run `01` → `02`
+result, since the scene search picked the same scene) and identical DSMs
+and held-out numbers. Fetch-by-bounds only knows one scene per request: an
+AOI straddling two Sentinel-2 tiles gets whatever part the chosen scene
+covers.
 
 ## What's inside
 
 | Folder | Role |
 |---|---|
-| `qgis_prep/` | AOI prep pipeline (moved here unchanged from the repo root). `01`/`02` are the manual pre-step above; `03_extract_metadata.py` and `04_fetch_srtm.py` are called directly by `main.py` per upload (via callable entry points added on top of their existing CLI behavior). `04_fetch_srtm.py` also fetches the terrain DEM (`--dem-source copernicus\|fabdem\|srtm`). |
+| `qgis_prep/` | AOI prep pipeline (moved here unchanged from the repo root). `01_fetch_geotiff.py` / `02_crop_geotiff.py` can still be run by hand, and are also what `main.py`'s bounds-based input modes call; `03_extract_metadata.py` and `04_fetch_srtm.py` are called directly by `main.py` per upload (via callable entry points added on top of their existing CLI behavior). `04_fetch_srtm.py` also fetches the terrain DEM (`--dem-source copernicus\|fabdem\|srtm`). |
 | `dsm_calibration/` | `srtm_calibration.py` (terrain + detail fusion, plus the original SRTM-only Theil-Sen calibration, kept as the consistency check), `geotiff_to_viewer_assets.py` (GeoTIFF → PNG/JPG + real elevation metadata for the viewers), and the evaluation tools `fetch_icesat2_truth.py` + `evaluate_fusion.py`. |
 | `3d_visualization/` | The Three.js terrain flythrough (Person 3's viewer). |
 | `leaflet_pitch/` | The 2D context map (real AOI rectangle over OpenStreetMap) with a link into the 3D flythrough. |
-| `main.py` | FastAPI orchestration: `POST /jobs` chains all of the above for one uploaded GeoTIFF. |
+| `main.py` | FastAPI orchestration: `POST /jobs` chains all of the above for one AOI (see "Input modes"). |
 
 ## Run it
 
@@ -39,7 +61,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Then open `http://localhost:8000/` — upload a GeoTIFF, and once processing
+Then open `http://localhost:8000/` — pick an input mode, and once processing
 finishes you get links to the 2D context map and the 3D flythrough, both
 pointed at the new result.
 
@@ -51,9 +73,9 @@ fallback: it is **CC BY-NC-SA 4.0, non-commercial** (see `NOTICE.md`).
 
 ## Pipeline (per upload)
 
-1. Save the upload as the current AOI (`qgis_prep/data/aoi_cropped.tif`) —
-   synchronous, single-job MVP scope, same as `track_c_api`: one upload
-   overwrites the previous result, no per-job history.
+1. Write the current AOI (`qgis_prep/data/aoi_cropped.tif`) per the input
+   mode above — synchronous, single-job MVP scope, same as `track_c_api`:
+   each job overwrites the previous result, no per-job history.
 2. Extract its real embedded bounds via rasterio (`03_extract_metadata.py`)
    — not assumed, read from the file's own georeference.
 3. Fetch the terrain DEM for those exact bounds
