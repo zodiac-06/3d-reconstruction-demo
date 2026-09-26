@@ -146,6 +146,16 @@ r ≈ 0.45, RMSE ≈ 313m here) measure how well relative depth alone tracks
 elevation, which is poorly. The UI shows them as a consistency check, not
 as the DSM's accuracy.
 
+**End-to-end check through the live API:** uploading the Nainital crop to
+`POST /jobs` with the default settings fetched Copernicus remotely, ran
+Depth Anything, and returned held-out RMSE 313.58m / MAE 257.06m /
+r = 0.4496, identical to the standalone run. Its `output_dsm.tif` matches
+the standalone Copernicus + detail DSM to within 0.0003m per pixel and
+scores the same against ICESat-2 (14.84m vs canopy top, 12.86m vs
+terrain). The upload page, the 2D map and the 3D viewer all render it. The
+committed `3d_visualization/assets/` are that run's output (elevation
+914.7–2,631.8m, vs. 1,444.8–2,381.0m from the old SRTM-only DSM).
+
 Only Nainital has been evaluated against lidar. Bangalore (below) was run
 only under the old pipeline.
 
