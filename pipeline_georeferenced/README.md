@@ -199,10 +199,11 @@ The run directory needs `aoi_cropped.tif` (`02_crop_geotiff.py`'s crop of
 the Nainital `raw_source.tif`), `depth.npy` (`DepthPipeline('vits')`), and
 `srtm_dem.tif`, `terrain_fabdem.tif`, `terrain_copernicus.tif` (from
 `04_fetch_srtm.py`'s functions with `srtm_path=` / `dem_path=` /
-`sources=` pointed there). Evaluation needs `pandas pyproj sliderule` on top
-of `requirements.txt` (deliberately not pipeline requirements). Then:
+`sources=` pointed there). The lidar validation's extra dependencies
+(pandas, pyproj, sliderule) are in `requirements-eval.txt`. Then:
 
 ```
+pip install -r requirements.txt -r requirements-eval.txt
 python dsm_calibration/fetch_icesat2_truth.py <run>/aoi_cropped.tif <run>/icesat2_atl08_truth.csv
 cd dsm_calibration && python evaluate_fusion.py real_run_nainital_fusion
 ```
