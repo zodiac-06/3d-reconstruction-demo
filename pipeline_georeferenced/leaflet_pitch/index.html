@@ -31,7 +31,7 @@
 <body>
 <div id="map"></div>
 <div class="panel">
-  <h1>Nainital AOI — context map</h1>
+  <h1 id="aoi-title">AOI context map</h1>
   <p id="aoi-summary">Loading real AOI bounds from <code>geo_metadata.json</code>…</p>
   <a id="open-3d" class="disabled" href="../3d_visualization/index.html">Open 3D terrain flythrough →</a>
 </div>
@@ -73,6 +73,13 @@
       }).addTo(map);
 
       map.fitBounds(bounds, { padding: [40, 40] });
+
+      // Title from the AOI actually processed (its centre), not a fixed
+      // place name -- the pipeline accepts any bounds, not just Nainital.
+      const fmt = (v, pos, neg) => `${Math.abs(v).toFixed(3)}°${v >= 0 ? pos : neg}`;
+      const centre = `${fmt((b.south + b.north) / 2, 'N', 'S')}, ${fmt((b.west + b.east) / 2, 'E', 'W')}`;
+      document.getElementById('aoi-title').textContent = `AOI at ${centre} — context map`;
+      document.title = `Vision2Scale — AOI at ${centre}`;
 
       const summary = document.getElementById('aoi-summary');
       summary.innerHTML =
