@@ -28,14 +28,14 @@
 <body>
 <div class="wrap">
   <h1>Georeferenced DSM Pipeline</h1>
-  <div class="subtitle">GeoTIFF → depth → SRTM-calibrated absolute-elevation DSM → viewable terrain</div>
+  <div class="subtitle">GeoTIFF → terrain DEM (Copernicus GLO-30) + Depth Anything detail → absolute-elevation DSM → viewable terrain</div>
 
   <div class="scope-note">
     <strong>Scope requirement:</strong> the uploaded GeoTIFF must already be <strong>cropped to your area of interest</strong>.
     This pipeline does not search for scenes or crop them for you — that's a separate, earlier step
     (see <code>qgis_prep/01_fetch_geotiff.py</code> + <code>02_crop_geotiff.py</code>, or crop by hand in QGIS).
-    Uploading an uncropped, multi-hundred-MB scene will still run, but slowly, and will fetch an SRTM
-    tile sized to match whatever area you gave it — not a sensibly small one.
+    Uploading an uncropped, multi-hundred-MB scene will still run, but slowly, and will fetch a DEM
+    sized to match whatever area you gave it — not a sensibly small one.
   </div>
 
   <div class="panel">
@@ -68,7 +68,7 @@
 
     submitBtn.disabled = true;
     statusEl.className = '';
-    statusEl.textContent = 'Uploading and processing (depth estimation + SRTM fetch + calibration)... this can take a little while.';
+    statusEl.textContent = 'Uploading and processing (DEM fetch + depth estimation + fusion)... this can take a little while.';
     resultEl.style.display = 'none';
 
     try {
@@ -83,8 +83,14 @@
 
       const m = data.metrics;
       statusEl.textContent = 'Done.';
+      const fellBack = m.dem_source !== m.dem_requested
+        ? ` (requested ${m.dem_requested}, which was unavailable)` : '';
       document.getElementById('metrics-summary').innerHTML =
-        `<b>Held-out metrics</b> (test set, not training points):<br>` +
+        `<b>Terrain DEM:</b> ${m.dem_source}${fellBack}, ${m.vertical_datum} heights. ` +
+        `The DSM's elevations come from this DEM; Depth Anything adds a detail layer ` +
+        `(std ${m.detail_std_m.toFixed(2)}m).<br>` +
+        `<b>Consistency check</b> — Depth Anything vs. DEM, held-out points ` +
+        `(how well relative depth alone tracks elevation; <i>not</i> the DSM's accuracy):<br>` +
         `RMSE: ${m.rmse.toFixed(2)}m &nbsp; MAE: ${m.mae.toFixed(2)}m &nbsp; correlation: ${m.correlation.toFixed(3)}<br>` +
         `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}`;
       resultEl.style.display = 'block';
