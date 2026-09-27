@@ -54,3 +54,6 @@ pipeline_georeferenced/jobs_meta_store.json
 # "!" needed since the pattern below only matches literal ".env", not
 # ".env.example").
 .env
+
+# Lang-CHM pretrained weights (downloaded by canopy_height/lang_chm.py)
+pipeline_georeferenced/canopy_height/trained_models/
