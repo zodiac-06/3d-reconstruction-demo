@@ -233,3 +233,25 @@ pip install -r requirements.txt -r requirements-eval.txt
 python dsm_calibration/fetch_icesat2_truth.py <run>/aoi_cropped.tif <run>/icesat2_atl08_truth.csv
 cd dsm_calibration && python evaluate_fusion.py real_run_nainital_fusion
 ```
+
+## Validation evidence panel
+
+When a job's grid matches an evaluation run that has ICESat-2 truth (any
+`dsm_calibration/<run>/` holding `aoi_cropped.tif` +
+`icesat2_atl08_truth.csv`, the same lookup DEM Court uses), the job's DSM is
+scored against every lidar point when the job finishes
+(`validation/evidence.py`). The job keeps the summary; the per-point file
+goes to `jobs_meta/<id>_validation.json` and is served at
+`GET /jobs/{id}/validation`. The upload page then links to
+`validation/index.html?job=<id>`: RMSE / MAE / bias / NMAD / r vs canopy top
+or ground, a map of per-point error, DSM-vs-lidar scatter, error histogram,
+the largest errors, and a CSV of every point. Heights are compared in the
+job DEM's own datum (the truth CSV carries EGM96 and EGM2008).
+
+No truth for the grid means no link and a 409 from the endpoint, never a
+number from a different AOI. To get truth for a new AOI, run
+`fetch_icesat2_truth.py` on its crop into a run directory (needs network
+access to slideruleearth.io and cdn.proj.org).
+
+`python validation/test_evidence.py` checks the scoring against a synthetic
+plane DSM whose correct values are known in closed form.

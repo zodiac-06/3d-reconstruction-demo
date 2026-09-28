@@ -87,6 +87,7 @@
       <a id="link-map" href="/leaflet_pitch/index.html">Open 2D context map →</a>
       <a id="link-3d" href="/3d_visualization/index.html">Open 3D terrain flythrough →</a>
       <a id="link-court" href="/dem_court/index.html">Compare DEM sources (DEM Court) →</a>
+      <a id="link-validation" href="/validation/index.html" style="display:none">Validation evidence (ICESat-2, per point) →</a>
     </div>
   </div>
 </div>
@@ -261,6 +262,15 @@
         `RMSE: ${m.rmse.toFixed(2)}m &nbsp; MAE: ${m.mae.toFixed(2)}m &nbsp; correlation: ${m.correlation.toFixed(3)}<br>` +
         `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}</details>`;
       document.getElementById('link-court').href = `/dem_court/index.html?job=${encodeURIComponent(data.id)}`;
+      const v = data.validation || {};
+      const linkVal = document.getElementById('link-validation');
+      const canopy = v.available ? v.stats.canopy_top : null;
+      const show = Boolean(canopy && Number.isFinite(canopy.rmse));
+      linkVal.style.display = show ? 'inline-block' : 'none';
+      if (show) {
+        linkVal.href = `/validation/index.html?job=${encodeURIComponent(data.id)}`;
+        linkVal.textContent = `Validation evidence (${canopy.n} ICESat-2 points, live RMSE ${canopy.rmse.toFixed(1)} m) →`;
+      }
       resultEl.style.display = 'block';
     } catch (err) {
       fail(`Error: ${err.message}`);

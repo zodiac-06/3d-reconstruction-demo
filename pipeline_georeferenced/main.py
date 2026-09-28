@@ -97,6 +97,7 @@ crop_geotiff_mod = _load_module("crop_geotiff_mod", QGIS_PREP_DIR / "02_crop_geo
 extract_metadata_mod = _load_module("extract_metadata_mod", QGIS_PREP_DIR / "03_extract_metadata.py")
 fetch_srtm_mod = _load_module("fetch_srtm_mod", QGIS_PREP_DIR / "04_fetch_srtm.py")
 dem_court_mod = _load_module("dem_court_mod", BASE_DIR / "dem_court" / "court.py")
+evidence_mod = _load_module("evidence_mod", BASE_DIR / "validation" / "evidence.py")
 
 from aoi_config import SOURCE_BUFFER_DEG  # noqa: E402
 from geotiff_to_viewer_assets import generate_viewer_assets  # noqa: E402
@@ -351,6 +352,8 @@ async def create_job(
     except Exception as exc:
         _tick(timings, None)
         jobs[job_id].update(status="failed", error=str(exc))
+    if jobs[job_id]["status"] == "done":
+        jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
     timings["total"] = round(time.perf_counter() - started, 2)
     jobs[job_id]["timings_s"] = timings
 
@@ -358,11 +361,51 @@ async def create_job(
     return jobs[job_id]
 
 
+def _truth_dirs():
+    """Where ICESat-2 evaluation runs live (same search as DEM Court)."""
+    return sorted(str(d) for d in DSM_CAL_DIR.iterdir() if d.is_dir())
+
+
+def _validation_path(job_id):
+    return BASE_DIR / JOBS_DIR_NAME / f"{job_id}_validation.json"
+
+
+def _save_validation(job_id, vertical_datum):
+    """Score this job's DSM against ICESat-2, if truth exists for its grid.
+    The per-point evidence goes to its own file (it can be thousands of
+    points); the job keeps only the summary. A scoring failure is recorded,
+    not raised -- the DSM itself is still good."""
+    try:
+        evidence = evidence_mod.build_evidence(str(DSM_OUTPUT_PATH), vertical_datum, _truth_dirs())
+    except Exception as exc:
+        return {"available": False, "reason": f"validation failed: {exc}"}
+    if evidence is None:
+        return {"available": False,
+                "reason": "no ICESat-2 truth for this AOI's grid (see dsm_calibration/fetch_icesat2_truth.py)"}
+    with open(_validation_path(job_id), "w") as f:
+        json.dump(evidence, f)
+    return {"available": True, **{k: evidence[k] for k in
+                                  ("source_run", "vertical_datum", "n_segments", "n_on_dsm", "stats")}}
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     return jobs[job_id]
+
+
+@app.get("/jobs/{job_id}/validation")
+def get_validation(job_id: str):
+    """Per-point ICESat-2 evidence for the job's DSM (validation/evidence.py)."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    summary = job.get("validation") or {}
+    if not summary.get("available") or not _validation_path(job_id).exists():
+        raise HTTPException(status_code=409, detail=summary.get("reason", "Job has no validation evidence"))
+    with open(_validation_path(job_id)) as f:
+        return dict(json.load(f), job_id=job_id)
 
 
 @app.get("/jobs/{job_id}/dem-court")
