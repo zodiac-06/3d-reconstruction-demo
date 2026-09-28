@@ -55,3 +55,6 @@ pipeline_georeferenced/jobs_meta_store.json
 # "!" needed since the pattern below only matches literal ".env", not
 # ".env.example").
 .env
+
+# DEM Court per-AOI cache (dem_court/court.py)
+pipeline_georeferenced/dem_court/cache/

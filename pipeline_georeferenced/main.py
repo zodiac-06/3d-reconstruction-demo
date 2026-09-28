@@ -96,6 +96,7 @@ fetch_geotiff_mod = _load_module("fetch_geotiff_mod", QGIS_PREP_DIR / "01_fetch_
 crop_geotiff_mod = _load_module("crop_geotiff_mod", QGIS_PREP_DIR / "02_crop_geotiff.py")
 extract_metadata_mod = _load_module("extract_metadata_mod", QGIS_PREP_DIR / "03_extract_metadata.py")
 fetch_srtm_mod = _load_module("fetch_srtm_mod", QGIS_PREP_DIR / "04_fetch_srtm.py")
+dem_court_mod = _load_module("dem_court_mod", BASE_DIR / "dem_court" / "court.py")
 
 from aoi_config import SOURCE_BUFFER_DEG  # noqa: E402
 from geotiff_to_viewer_assets import generate_viewer_assets  # noqa: E402
@@ -362,6 +363,27 @@ def get_job(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     return jobs[job_id]
+
+
+@app.get("/jobs/{job_id}/dem-court")
+def get_dem_court(job_id: str, fabdem: bool = False):
+    """Every terrain DEM source for the job's AOI on its pixel grid, in one
+    vertical datum (see dem_court/court.py). Read-only: doesn't change the
+    job, the pipeline's DEM, or the fallback order. Cached per AOI."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "done" or not job.get("bounds_epsg4326"):
+        raise HTTPException(status_code=409, detail="Job has no finished AOI")
+    b = job["bounds_epsg4326"]
+    try:
+        manifest, _ = dem_court_mod.build_court(
+            (b["west"], b["south"], b["east"], b["north"]), fetch_srtm_mod,
+            current_crop=str(CROPPED_PATH), include_fabdem=fabdem,
+            icesat_dirs=sorted(str(d) for d in DSM_CAL_DIR.iterdir() if d.is_dir()))
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return dict(manifest, job_id=job_id)
 
 
 # Serves qgis_prep/data/, leaflet_pitch/, 3d_visualization/, dsm_calibration/
