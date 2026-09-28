@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DEM Court</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { margin: 0; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #e8eaed; }
+  a { color: #4fc3f7; }
+  .top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: baseline; padding: 14px 20px 6px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: #9aa0a6; font-size: 12px; }
+  #status { padding: 0 20px; font-size: 13px; color: #9aa0a6; min-height: 18px; }
+  #status.error { color: #ff6b6b; }
+  .controls { padding: 6px 20px 10px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; }
+  .licence { color: #ffd54f; font-size: 12px; }
+  table.datum { border-collapse: collapse; font-size: 12px; margin: 0 20px 10px; }
+  table.datum th, table.datum td { border: 1px solid rgba(255,255,255,0.12); padding: 4px 8px; text-align: left; }
+  table.datum th { color: #9aa0a6; font-weight: 600; }
+  .layout { display: grid; grid-template-columns: 1fr 330px; gap: 14px; padding: 0 20px 20px; align-items: start; }
+  .panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 8px; }
+  .panel h3 { font-size: 13px; margin: 0 0 6px; font-weight: 600; }
+  .panel h3 .muted { font-weight: 400; }
+  .map { height: 280px; background: #15171c; border-radius: 4px; }
+  .legend { margin-top: 6px; }
+  .legend canvas { width: 100%; height: 10px; display: block; border-radius: 2px; }
+  .legend .labels { display: flex; justify-content: space-between; font-size: 11px; color: #9aa0a6; margin-top: 2px; }
+  .leaflet-image-layer { image-rendering: pixelated; }
+  .leaflet-container { background: #15171c; }
+  #inspector { position: sticky; top: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; font-size: 13px; }
+  #inspector h2 { font-size: 14px; margin: 0 0 8px; }
+  #inspector table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #inspector td { padding: 2px 0; }
+  #inspector td.num { text-align: right; white-space: nowrap; padding-left: 8px; }
+  .verdict { margin-top: 8px; padding: 6px 8px; border-radius: 6px; font-weight: 700; }
+  .agree { background: rgba(76,175,80,0.2); color: #81c784; }
+  .disagree { background: rgba(244,67,54,0.2); color: #ff8a80; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } #inspector { position: static; } }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>DEM Court</h1>
+  <span class="muted" id="aoi-line"></span>
+  <a href="/">← upload page</a>
+</div>
+<div class="controls">
+  <label><input type="checkbox" id="fabdem-box" /> Include FABDEM</label>
+  <span class="licence">FABDEM is CC BY-NC-SA 4.0 — non-commercial use only; heavy fetch (read from multi-GB archives).
+    It is bare earth (trees and buildings removed), so under canopy and buildings it will sit below the surface models by design.</span>
+  <label><input type="checkbox" id="icesat-box" checked /> ICESat-2 reference points <span class="muted">(on the Copernicus panel)</span></label>
+  <span>Agree threshold: <b id="thr"></b> spread</span>
+</div>
+<div id="status">Loading…</div>
+<table class="datum" id="datum-table"></table>
+<div class="layout">
+  <div class="panels" id="panels"></div>
+  <div id="inspector"><h2>Pixel inspector</h2><div id="insp-body" class="muted">Hover a panel (click to pin).</div></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Pixels whose spread (max - min across sources) is at most this many metres "agree".
+// The server sends its value (dem_court/court.py AGREE_THRESHOLD_M); this is the fallback.
+let AGREE_THRESHOLD_M = 5.0;
+
+const RAMPS = {
+  elevation: ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'],
+  diverging: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
+  spread: ['#000004', '#320a5e', '#781c6d', '#bc3754', '#ed6925', '#fbb61a', '#fcffa4'],
+};
+const NAMES = { copernicus: 'Copernicus GLO-30', srtm: 'SRTM', nasadem: 'NASADEM', fabdem: 'FABDEM' };
+
+const params = new URLSearchParams(location.search);
+const jobId = params.get('job');
+const statusEl = document.getElementById('status');
+const fabdemBox = document.getElementById('fabdem-box');
+const icesatBox = document.getElementById('icesat-box');
+fabdemBox.checked = params.get('fabdem') === '1';
+
+function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function rampColor(stops, t) {
+  t = Math.min(1, Math.max(0, t));
+  const x = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x)), f = x - i;
+  const a = hexToRgb(stops[i]), b = hexToRgb(stops[i + 1]);
+  return [0, 1, 2].map(k => Math.round(a[k] + (b[k] - a[k]) * f));
+}
+
+// UTM (WGS84) -> lat/lon, Snyder (1987) series; the crop grids are Sentinel-2 UTM.
+function utmToLatLon(E, N, zone, south) {
+  const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996, e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+  const x = E - 500000, y = south ? N - 10000000 : N;
+  const mu = (y / k0) / (a * (1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 ** 3 / 256));
+  const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+  const p1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu) + (21 * e1 ** 2 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu)
+    + (151 * e1 ** 3 / 96) * Math.sin(6 * mu) + (1097 * e1 ** 4 / 512) * Math.sin(8 * mu);
+  const s = Math.sin(p1), c = Math.cos(p1), t = Math.tan(p1);
+  const N1 = a / Math.sqrt(1 - e2 * s * s), T1 = t * t, C1 = ep2 * c * c;
+  const R1 = a * (1 - e2) / Math.pow(1 - e2 * s * s, 1.5), D = x / (N1 * k0);
+  const lat = p1 - (N1 * t / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D ** 4 / 24
+    + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D ** 6 / 720);
+  const lon0 = ((zone - 1) * 6 - 180 + 3) * Math.PI / 180;
+  const lon = lon0 + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D ** 5 / 120) / c;
+  return [lat * 180 / Math.PI, lon * 180 / Math.PI];
+}
+
+let court = null, data = {}, shift = null, maps = [], crosshairs = [], pinned = false, icesatIndex = null;
+// Reference first, then the server's order -- not whichever raster finished downloading first.
+const sourceOrder = () => [court.reference, ...Object.keys(court.sources).filter(s => s !== court.reference)].filter(s => s in data);
+
+function pixelLatLon(row, col) {
+  const g = court.grid, [a, b, c, d, e, f] = g.transform, epsg = g.epsg;
+  if (!(epsg >= 32601 && epsg <= 32760)) return null;
+  const E = c + a * (col + 0.5) + b * (row + 0.5), N = f + d * (col + 0.5) + e * (row + 0.5);
+  return utmToLatLon(E, N, epsg % 100, epsg >= 32701);
+}
+
+function nearestIcesat(row, col, maxPx = 3) {
+  if (!icesatIndex) return null;
+  let best = null;
+  const cx = col + 0.5, cy = row + 0.5, B = 16;
+  for (let by = Math.floor((cy - maxPx) / B); by <= Math.floor((cy + maxPx) / B); by++)
+    for (let bx = Math.floor((cx - maxPx) / B); bx <= Math.floor((cx + maxPx) / B); bx++)
+      for (const p of icesatIndex.get(`${bx},${by}`) || []) {
+        const d = Math.hypot(p[0] - cx, p[1] - cy);
+        if (d <= maxPx && (!best || d < best.d)) best = { d, p };
+      }
+  return best && { distance_m: best.d * court.grid.pixel_m, lat: best.p[2], lon: best.p[3],
+                   terrain_m: best.p[4], canopy_top_m: best.p[5] };
+}
+
+// Everything the inspector shows for one pixel (also used by the automated check).
+function inspect(row, col) {
+  const g = court.grid;
+  if (row < 0 || col < 0 || row >= g.height || col >= g.width) return null;
+  const i = row * g.width + col, ref = court.reference;
+  const out = { row, col, latlon: pixelLatLon(row, col), sources: {}, threshold_m: AGREE_THRESHOLD_M };
+  const vals = [];
+  for (const s of sourceOrder()) {
+    const h = data[s][i], meta = court.sources[s];
+    const corr = meta.correction.applied ? shift[i] : 0;
+    out.sources[s] = { egm2008_m: Number.isNaN(h) ? null : h, datum_tag: meta.datum_tag, correction_m: corr,
+                       raw_m: Number.isNaN(h) ? null : h - corr,
+                       diff_vs_ref_m: (s === ref || Number.isNaN(h) || Number.isNaN(data[ref][i])) ? null : h - data[ref][i] };
+    if (!Number.isNaN(h)) vals.push(h);
+  }
+  out.spread_m = vals.length >= 2 ? Math.max(...vals) - Math.min(...vals) : null;
+  out.verdict = out.spread_m === null ? 'n/a' : (out.spread_m <= AGREE_THRESHOLD_M ? 'agree' : 'disagree');
+  out.icesat2 = nearestIcesat(row, col);
+  return out;
+}
+
+const fmt = (v, d = 2) => v === null || v === undefined ? '—' : v.toFixed(d);
+const sgn = v => v === null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2);
+
+function showInspector(row, col) {
+  const r = inspect(row, col);
+  const body = document.getElementById('insp-body');
+  if (!r) { body.innerHTML = '<span class="muted">Outside the AOI.</span>'; return; }
+  const ll = r.latlon ? `${r.latlon[0].toFixed(6)}°, ${r.latlon[1].toFixed(6)}°` : 'n/a';
+  let rows = '';
+  for (const [s, v] of Object.entries(r.sources)) {
+    const corr = court.sources[s].correction.applied ? ` <span class="muted">(${v.datum_tag} ${sgn(v.correction_m)})</span>` : '';
+    rows += `<tr><td>${NAMES[s]}${corr}</td><td class="num">${fmt(v.egm2008_m)} m</td>` +
+            `<td class="num">${s === court.reference ? '<span class="muted">ref</span>' : sgn(v.diff_vs_ref_m)}</td></tr>`;
+  }
+  let ice = '';
+  if (r.icesat2) ice = `<div style="margin-top:8px"><b>ICESat-2</b> <span class="muted">(nearest, ${r.icesat2.distance_m.toFixed(0)} m away; ${court.icesat2.source_run})</span><br>` +
+    `ground ${fmt(r.icesat2.terrain_m)} m · canopy top ${fmt(r.icesat2.canopy_top_m)} m</div>`;
+  else if (court.icesat2) ice = `<div class="muted" style="margin-top:8px">No ICESat-2 point within 30 m.</div>`;
+  body.innerHTML =
+    `<div class="muted">${pinned ? 'Pinned — click again to unpin' : 'Hovering — click to pin'}</div>` +
+    `<div>${ll}</div><div class="muted">row ${row}, col ${col}</div>` +
+    `<table style="margin-top:6px"><tr class="muted"><td>source (EGM2008)</td><td class="num">height</td><td class="num">vs ${NAMES[court.reference]}</td></tr>${rows}</table>` +
+    `<div style="margin-top:6px">Spread: <b>${fmt(r.spread_m)} m</b></div>` +
+    (r.spread_m === null ? '' : `<div class="verdict ${r.verdict}">${r.verdict.toUpperCase()} — spread ${r.verdict === 'agree' ? '≤' : '>'} ${AGREE_THRESHOLD_M} m</div>`) + ice;
+  const b = [[-row - 1, col], [-row, col + 1]];
+  crosshairs.forEach(c => c.setBounds(b).setStyle({ opacity: 1 }));
+}
+
+function renderImage(values, colorFor) {
+  const g = court.grid, cv = document.createElement('canvas');
+  cv.width = g.width; cv.height = g.height;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(g.width, g.height);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (Number.isNaN(v)) continue;
+    const [r, gg, b] = colorFor(v);
+    img.data[4 * i] = r; img.data[4 * i + 1] = gg; img.data[4 * i + 2] = b; img.data[4 * i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv.toDataURL();
+}
+
+function legend(stops, labels, note) {
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 1;
+  const ctx = cv.getContext('2d');
+  for (let x = 0; x < 256; x++) { const [r, g, b] = rampColor(stops, x / 255); ctx.fillStyle = `rgb(${r},${g},${b})`; ctx.fillRect(x, 0, 1, 1); }
+  return `<div class="legend"><img src="${cv.toDataURL()}" style="width:100%;height:10px;display:block;border-radius:2px;image-rendering:auto">` +
+         `<div class="labels">${labels.map(l => `<span>${l}</span>`).join('')}</div>${note ? `<div class="muted">${note}</div>` : ''}</div>`;
+}
+
+function addPanel(title, sub, imageUrl, legendHtml, withIcesat) {
+  const div = document.createElement('div'); div.className = 'panel';
+  div.innerHTML = `<h3>${title} <span class="muted">${sub}</span></h3><div class="map"></div>${legendHtml}`;
+  document.getElementById('panels').appendChild(div);
+  const g = court.grid, bounds = [[-g.height, 0], [0, g.width]];
+  const map = L.map(div.querySelector('.map'), { crs: L.CRS.Simple, minZoom: -4, maxZoom: 5, zoomSnap: 0.25,
+                                                 attributionControl: false, preferCanvas: true });
+  L.imageOverlay(imageUrl, bounds).addTo(map);
+  map.fitBounds(bounds);
+  crosshairs.push(L.rectangle([[0, 0], [0, 0]], { color: '#fff', weight: 2, fill: false, opacity: 0, interactive: false }).addTo(map));
+  if (withIcesat && court.icesat2) {
+    const layer = L.layerGroup(court.icesat2.points.map(p =>
+      L.circleMarker([-p[1], p[0]], { radius: 1.5, weight: 0, fillColor: '#fff', fillOpacity: 0.55, interactive: false })));
+    map._icesat = layer;
+    if (icesatBox.checked) layer.addTo(map);
+  }
+  map.on('mousemove', e => { if (!pinned) showInspector(Math.floor(-e.latlng.lat), Math.floor(e.latlng.lng)); });
+  map.on('click', e => { pinned = !pinned; showInspector(Math.floor(-e.latlng.lat), Math.floor(e.latlng.lng)); });
+  maps.push(map);
+}
+
+let syncing = false;
+function linkMaps() {
+  for (const m of maps) m.on('move', () => {
+    if (syncing) return;
+    syncing = true;
+    for (const o of maps) if (o !== m) o.setView(m.getCenter(), m.getZoom(), { animate: false });
+    syncing = false;
+  });
+}
+
+async function load() {
+  if (!jobId) { statusEl.innerHTML = 'No job given. Process an AOI on the <a href="/">upload page</a>, then open the DEM Court from there.'; return; }
+  const t0 = performance.now();
+  statusEl.className = ''; statusEl.textContent = fabdemBox.checked ? 'Fetching DEMs incl. FABDEM (first visit can take minutes)…' : 'Fetching DEMs (first visit per AOI fetches every source)…';
+  const res = await fetch(`/jobs/${encodeURIComponent(jobId)}/dem-court${fabdemBox.checked ? '?fabdem=true' : ''}`);
+  const body = await res.json();
+  if (!res.ok) { statusEl.className = 'error'; statusEl.textContent = `Could not load: ${body.detail || res.statusText}`; return; }
+  court = body;
+  AGREE_THRESHOLD_M = court.agree_threshold_m ?? AGREE_THRESHOLD_M;
+  const t1 = performance.now();
+  const avail = [court.reference, ...Object.keys(court.sources).filter(s => s !== court.reference)]
+    .filter(s => court.sources[s] && court.sources[s].available);
+  data = {};
+  await Promise.all(avail.map(async s => {
+    data[s] = new Float32Array(await (await fetch(court.cache_url + court.sources[s].url)).arrayBuffer());
+  }));
+  shift = court.geoid_shift_url ? new Float32Array(await (await fetch(court.cache_url + court.geoid_shift_url)).arrayBuffer()) : null;
+  if (court.icesat2) {
+    icesatIndex = new Map();
+    for (const p of court.icesat2.points) {
+      const k = `${Math.floor(p[0] / 16)},${Math.floor(p[1] / 16)}`;
+      if (!icesatIndex.has(k)) icesatIndex.set(k, []);
+      icesatIndex.get(k).push(p);
+    }
+  }
+  const t2 = performance.now();
+  render(avail);
+  const t3 = performance.now();
+  const b = court.bbox_epsg4326;
+  document.getElementById('aoi-line').textContent =
+    `AOI ${b[1].toFixed(4)}–${b[3].toFixed(4)}°N, ${b[0].toFixed(4)}–${b[2].toFixed(4)}°E · ${court.grid.width}×${court.grid.height} px @ ${court.grid.pixel_m} m · ${court.grid.crs}`;
+  document.getElementById('thr').textContent = `${AGREE_THRESHOLD_M} m`;
+  const failed = Object.entries(court.sources).filter(([, v]) => !v.available);
+  window.__court.timings = { api_ms: t1 - t0, rasters_ms: t2 - t1, render_ms: t3 - t2, total_ms: t3 - t0,
+                             server_load_s: court.load_time_s, cache_hit: court.cache_hit };
+  statusEl.textContent = `${court.cache_hit ? 'Cached' : 'Fetched'} · server ${court.load_time_s.toFixed(2)} s · page total ${((t3 - t0) / 1000).toFixed(2)} s` +
+    (failed.length ? ` · unavailable: ${failed.map(([s, v]) => `${NAMES[s]} (${v.error})`).join('; ')}` : '');
+  window.__court.ready = true;
+}
+
+function render(avail) {
+  maps.forEach(m => m.remove()); maps = []; crosshairs = [];
+  document.getElementById('panels').innerHTML = '';
+  const ref = court.reference, cmp = court.compare;
+  // Datum table
+  let rows = '<tr><th>Source</th><th>Datum tag</th><th>Correction applied (to EGM2008)</th><th>Licence</th></tr>';
+  for (const s of Object.keys(court.sources)) {
+    const v = court.sources[s];
+    rows += v.available
+      ? `<tr><td>${NAMES[s]}</td><td>${v.datum_tag}</td><td>${v.correction.applied
+          ? `${v.datum_tag} → EGM2008 geoid shift, per pixel: ${v.correction.min.toFixed(2)} to ${v.correction.max.toFixed(2)} m (mean ${v.correction.mean.toFixed(2)})`
+          : 'none — already EGM2008'}</td><td>${v.licence}</td></tr>`
+      : `<tr><td>${NAMES[s]}</td><td colspan="3">unavailable: ${v.error}</td></tr>`;
+  }
+  document.getElementById('datum-table').innerHTML = rows;
+
+  // Shared elevation ramp across every source
+  const [lo, hi] = cmp.height_range;
+  for (const s of avail) {
+    const url = renderImage(data[s], v => rampColor(RAMPS.elevation, (v - lo) / (hi - lo)));
+    addPanel(NAMES[s], `${court.sources[s].datum_tag}${court.sources[s].correction.applied ? '→EGM2008' : ''}`, url,
+             legend(RAMPS.elevation, [`${lo.toFixed(0)} m`, `${((lo + hi) / 2).toFixed(0)} m`, `${hi.toFixed(0)} m`], 'shared scale, all sources (EGM2008)'),
+             s === ref);
+  }
+  // Difference vs reference, one symmetric diverging scale for all
+  const others = avail.filter(s => s !== ref);
+  const D = Math.max(5, Math.ceil(Math.max(...others.map(s => cmp.diff_vs_reference[s].abs_p95))));
+  for (const s of others) {
+    const d = data[s].map((v, i) => v - data[ref][i]);
+    const st = cmp.diff_vs_reference[s];
+    addPanel(`${NAMES[s]} − ${NAMES[ref]}`, `mean ${sgn(st.mean)} m`,
+             renderImage(d, v => rampColor(RAMPS.diverging, (v + D) / (2 * D))),
+             legend(RAMPS.diverging, [`≤ −${D} m`, '0', `≥ +${D} m`], `red: ${NAMES[s]} higher; blue: lower`), false);
+  }
+  // Spread
+  const n = court.grid.width * court.grid.height, spread = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let mx = -Infinity, mn = Infinity, k = 0;
+    for (const s of avail) { const v = data[s][i]; if (!Number.isNaN(v)) { mx = Math.max(mx, v); mn = Math.min(mn, v); k++; } }
+    spread[i] = k >= 2 ? mx - mn : NaN;
+  }
+  const S = Math.max(2 * AGREE_THRESHOLD_M, Math.ceil(cmp.spread.p95));
+  addPanel('Spread', `max − min, ${avail.length} sources · mean ${cmp.spread.mean.toFixed(2)} m, p95 ${cmp.spread.p95.toFixed(2)} m`,
+           renderImage(spread, v => rampColor(RAMPS.spread, v / S)),
+           legend(RAMPS.spread, ['0 m', `${S / 2} m`, `≥ ${S} m`],
+                  `${(cmp.spread_frac_over_threshold * 100).toFixed(1)}% of pixels over the ${AGREE_THRESHOLD_M} m agree threshold`), false);
+  linkMaps();
+}
+
+fabdemBox.addEventListener('change', () => {
+  const u = new URL(location.href);
+  if (fabdemBox.checked) u.searchParams.set('fabdem', '1'); else u.searchParams.delete('fabdem');
+  history.replaceState(null, '', u);
+  window.__court.ready = false;
+  load().catch(err => { statusEl.className = 'error'; statusEl.textContent = `Error: ${err.message}`; });
+});
+icesatBox.addEventListener('change', () => maps.forEach(m => m._icesat && (icesatBox.checked ? m._icesat.addTo(m) : m._icesat.remove())));
+
+window.__court = { inspect, ready: false, get maps() { return maps; }, get manifest() { return court; } };
+load().catch(err => { statusEl.className = 'error'; statusEl.textContent = `Error: ${err.message}`; });
+</script>
+</body>
+</html>
