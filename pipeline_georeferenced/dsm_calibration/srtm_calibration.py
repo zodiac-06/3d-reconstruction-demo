@@ -251,9 +251,27 @@ def fuse_terrain_and_ndsm(dem_on_grid, relative_depth, s=1.0, offset=0.0):
     return dem_on_grid + s * relative_depth + offset
 
 
+def pixel_size_metres(transform, crs, shape):
+    """(row, col) ground size of one pixel in metres. A geographic CRS
+    (e.g. an EPSG:4326 upload) has pixel sizes in degrees, so convert with
+    the WGS84 meridional / prime-vertical radii at the grid's centre
+    latitude; a projected CRS is scaled by its linear unit (1 for metres)."""
+    dy, dx = abs(transform.e), abs(transform.a)
+    if crs.is_geographic:
+        _, lat = transform * (shape[1] / 2, shape[0] / 2)
+        phi = np.radians(lat)
+        a, e2 = 6378137.0, 0.00669437999014
+        w = 1 - e2 * np.sin(phi) ** 2
+        m_per_deg_lat = np.radians(1) * a * (1 - e2) / w ** 1.5
+        m_per_deg_lon = np.radians(1) * a * np.cos(phi) / np.sqrt(w)
+        return float(dy * m_per_deg_lat), float(dx * m_per_deg_lon)
+    factor = crs.linear_units_factor[1]
+    return float(dy * factor), float(dx * factor)
+
+
 def relative_depth_detail_layer(relative_depth, sigma_px):
     """High-pass relative_depth: subtract a Gaussian low-pass of sigma_px
-    pixels. Choose sigma_px ~ the terrain DEM's resolution in depth-map
+    pixels (one number, or (rows, cols) for non-square pixels). Choose sigma_px ~ the terrain DEM's resolution in depth-map
     pixels, so what's left is structure finer than the DEM can represent.
     NaN-aware (normalized convolution), so voids don't bleed into their
     neighbourhood."""
@@ -307,8 +325,8 @@ def terrain_plus_detail_dsm(
     consistency = evaluate_fit(slope, intercept, depth_test, elev_test)
     consistency["n_fit"] = len(depth_fit)
 
-    pixel_size_m = abs(dst_transform.a)
-    detail = relative_depth_detail_layer(slope * relative_depth, detail_sigma_m / pixel_size_m)
+    dy_m, dx_m = pixel_size_metres(dst_transform, dst_crs, relative_depth.shape)
+    detail = relative_depth_detail_layer(slope * relative_depth, (detail_sigma_m / dy_m, detail_sigma_m / dx_m))
     dsm = fuse_terrain_and_ndsm(dem_on_grid, detail, s=s, offset=offset)
 
     theil_sen_dsm = apply_calibration(relative_depth, slope, intercept)
