@@ -27,8 +27,8 @@ so it can be compared pixel-for-pixel (RMSE/MAE) against whatever DSM/DEM
 the depth-estimation track produces from the optical image.
 
 Separately (see the "Bare-earth terrain DEM" section below), it fetches a
-terrain DEM -- Copernicus GLO-30 by default, falling back to SRTM; FABDEM
-only on request -- to data/terrain_dem.tif + data/terrain_dem_aligned.tif:
+terrain DEM -- Copernicus GLO-30 by default, falling back to SRTM, then
+NASADEM; FABDEM only on request -- to data/terrain_dem.tif + data/terrain_dem_aligned.tif:
 the base layer for srtm_calibration.fuse_terrain_and_ndsm().
 
 Run:
@@ -225,16 +225,22 @@ def _fetch_srtm(bbox, out_path):
 
 
 # ---------------------------------------------------------------------------
-# Terrain DEM (Copernicus GLO-30 -> SRTM; FABDEM on request)
+# Terrain DEM (Copernicus GLO-30 -> SRTM -> NASADEM; FABDEM on request)
 #
 # SRTM above is kept as-is for the legacy SRTM-only calibration. The terrain
 # DEM below is the base layer that srtm_calibration.fuse_terrain_and_ndsm()
-# adds relative-depth detail on top of. Default order is copernicus -> srtm:
-# the pipeline's output is a DSM, so a surface model is the right base, and
-# Copernicus is freely licensed. FABDEM is never an implicit fallback (its
-# licence is non-commercial) -- it's used only when explicitly preferred.
-# Tested on Nainital against ICESat-2 lidar (pipeline README): Copernicus
-# 14.8m RMSE vs canopy top, FABDEM 9.2m vs bare ground, SRTM ~15m.
+# adds relative-depth detail on top of. Default order is copernicus -> srtm
+# -> nasadem: the pipeline's output is a DSM, so a surface model is the
+# right base, and all three are freely licensed. FABDEM is never an implicit
+# fallback (its licence is non-commercial) -- it's used only when explicitly
+# preferred.
+# SRTM goes ahead of NASADEM on measured accuracy, not age: NASADEM sits ~2m
+# lower than SRTM (closer to bare ground), which scores better vs ICESat-2
+# terrain but worse vs canopy top -- the DSM target. RMSE vs ICESat-2
+# canopy top (dsm_calibration/evaluate_dem_sources.py): Nainital SRTM 15.2m
+# / NASADEM 17.3m, Bangalore SRTM 10.1m / NASADEM 12.5m (Copernicus 14.8m /
+# 10.8m). NASADEM stays as a second fallback for redundancy (different host).
+# Also on Nainital: FABDEM 9.2m RMSE vs bare ground.
 #
 #   fabdem      FABDEM V1-2 (Hawker et al. 2022, Univ. of Bristol): Copernicus
 #               GLO-30 with forests and buildings removed by ML -- the closest
@@ -249,7 +255,14 @@ def _fetch_srtm(bbox, out_path):
 #               Data COGs, no auth. ~30m, EGM2008. A *surface* model (includes
 #               canopy/buildings) -- what a DSM should be -- independent of
 #               SRTM and far newer. DEFAULT.
-#   srtm        The same SRTM path as above (EGM96). Fallback.
+#   nasadem     NASADEM (NASA JPL, 2020): SRTM reprocessed with improved
+#               phase unwrapping and ICESat GLAS control, voids filled mainly
+#               from ASTER GDEM. ~30m, EGM96. Same 2000 surface as SRTM.
+#               COGs on Microsoft Planetary Computer (Azure), read with an
+#               anonymous SAS token -- no account. NASA data, no use
+#               restrictions (LP DAAC policy). SECOND FALLBACK, for
+#               redundancy (different host from SRTM).
+#   srtm        The same SRTM path as above (EGM96). FIRST FALLBACK.
 #
 # Output GeoTIFFs carry DEM_SOURCE / VERTICAL_DATUM tags, because FABDEM /
 # Copernicus (EGM2008) and SRTM (EGM96) differ by a few meters in places
@@ -259,13 +272,15 @@ def _fetch_srtm(bbox, out_path):
 TERRAIN_DEM_PATH = os.path.join(DATA_DIR, "terrain_dem.tif")
 TERRAIN_DEM_ALIGNED_PATH = os.path.join(DATA_DIR, "terrain_dem_aligned.tif")
 
-TERRAIN_DEM_SOURCES = ("copernicus", "fabdem", "srtm")
+TERRAIN_DEM_SOURCES = ("copernicus", "srtm", "nasadem", "fabdem")
 DEFAULT_TERRAIN_DEM_SOURCE = "copernicus"
-FALLBACK_TERRAIN_DEM_SOURCES = ("copernicus", "srtm")  # never FABDEM implicitly
-VERTICAL_DATUM = {"fabdem": "EGM2008", "copernicus": "EGM2008", "srtm": "EGM96"}
+FALLBACK_TERRAIN_DEM_SOURCES = ("copernicus", "srtm", "nasadem")  # never FABDEM implicitly
+VERTICAL_DATUM = {"fabdem": "EGM2008", "copernicus": "EGM2008", "nasadem": "EGM96", "srtm": "EGM96"}
 
 FABDEM_BASE = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
 COPERNICUS_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
+NASADEM_BASE = "https://nasademeuwest.blob.core.windows.net/nasadem-cog/v001"
+NASADEM_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token/nasadem"
 
 # Don't let GDAL list the remote "directory" before every open -- on S3 /
 # the Bristol web share that's an extra slow request per tile, or a failure.
@@ -307,6 +322,13 @@ def copernicus_tile_path(lat, lon):
     """GDAL virtual path to one 1-degree Copernicus GLO-30 COG on AWS."""
     name = f"Copernicus_DSM_COG_10_{_lat_label(lat)}_00_{_lon_label(lon)}_00_DEM"
     return f"/vsicurl/{COPERNICUS_BASE}/{name}/{name}.tif"
+
+
+def nasadem_tile_path(lat, lon, sas_token):
+    """GDAL virtual path to one 1-degree NASADEM COG on Planetary Computer,
+    e.g. N29E079 -> .../NASADEM_HGT_n29e079.tif?<sas token>"""
+    name = f"NASADEM_HGT_{_lat_label(lat).lower()}{_lon_label(lon).lower()}"
+    return f"/vsicurl/{NASADEM_BASE}/{name}.tif?{sas_token}"
 
 
 def _fetch_remote_tiles(tile_path_fn, bbox, out_path, label):
@@ -351,6 +373,13 @@ def fetch_via_copernicus(bbox, out_path=TERRAIN_DEM_PATH):
     _fetch_remote_tiles(copernicus_tile_path, bbox, out_path, "Copernicus GLO-30")
 
 
+def fetch_via_nasadem(bbox, out_path=TERRAIN_DEM_PATH):
+    resp = requests.get(NASADEM_TOKEN_URL, timeout=30)
+    resp.raise_for_status()
+    token = resp.json()["token"]
+    _fetch_remote_tiles(lambda lat, lon: nasadem_tile_path(lat, lon, token), bbox, out_path, "NASADEM")
+
+
 def _tag_dem(path, source):
     with rasterio.open(path, "r+") as ds:
         ds.update_tags(DEM_SOURCE=source, VERTICAL_DATUM=VERTICAL_DATUM[source])
@@ -358,8 +387,8 @@ def _tag_dem(path, source):
 
 def terrain_dem_sources(preferred=DEFAULT_TERRAIN_DEM_SOURCE):
     """Fetch order for a preferred source: it first, then the free-licence
-    fallbacks (Copernicus, SRTM). e.g. "fabdem" -> (fabdem, copernicus, srtm),
-    "srtm" -> (srtm, copernicus)."""
+    fallbacks (Copernicus, SRTM, NASADEM). e.g. "fabdem" -> (fabdem,
+    copernicus, srtm, nasadem), "nasadem" -> (nasadem, copernicus, srtm)."""
     if preferred not in TERRAIN_DEM_SOURCES:
         raise ValueError(f"Unknown DEM source {preferred!r}; expected one of {TERRAIN_DEM_SOURCES}")
     return (preferred,) + tuple(s for s in FALLBACK_TERRAIN_DEM_SOURCES if s != preferred)
@@ -370,7 +399,7 @@ def fetch_terrain_dem_for_aoi(bbox=None, cropped_path=CROPPED_PATH,
                               dem_path=TERRAIN_DEM_PATH,
                               aligned_path=TERRAIN_DEM_ALIGNED_PATH):
     """Terrain DEM for the AOI: tries each of `sources` in order (default
-    Copernicus GLO-30 -> SRTM; see terrain_dem_sources()) and keeps the
+    Copernicus GLO-30 -> SRTM -> NASADEM; see terrain_dem_sources()) and keeps the
     first that works. Pass e.g. sources=("fabdem",) to force one with no
     fallback.
 
@@ -384,6 +413,7 @@ def fetch_terrain_dem_for_aoi(bbox=None, cropped_path=CROPPED_PATH,
     fetchers = {
         "fabdem": lambda: fetch_via_fabdem(bbox, out_path=dem_path),
         "copernicus": lambda: fetch_via_copernicus(bbox, out_path=dem_path),
+        "nasadem": lambda: fetch_via_nasadem(bbox, out_path=dem_path),
         "srtm": lambda: _fetch_srtm(bbox, dem_path),
     }
     failures = {}
@@ -414,7 +444,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dem-source", default=DEFAULT_TERRAIN_DEM_SOURCE, choices=TERRAIN_DEM_SOURCES,
         help="preferred terrain DEM to fetch alongside SRTM (default: copernicus); "
-             "falls back to Copernicus GLO-30, then SRTM. fabdem is "
+             "falls back to Copernicus GLO-30, then SRTM, then NASADEM. fabdem is "
              "CC BY-NC-SA 4.0 (non-commercial)")
     parser.add_argument(
         "--srtm-only", action="store_true",

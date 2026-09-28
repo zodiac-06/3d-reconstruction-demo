@@ -52,6 +52,11 @@ redistribution via the mirrors above follows their respective usage terms.
   Space GmbH 2014-2018, provided under COPERNICUS by the European Union and
   ESA; all rights reserved. Free to use under the Copernicus DEM licence;
   fetched from the AWS Open Data mirror (`s3://copernicus-dem-30m`).
+- **NASADEM** (NASA JPL (2020). *NASADEM Merged DEM Global 1 arc second
+  V001.* NASA EOSDIS Land Processes DAAC, doi:10.5067/MEaSUREs/NASADEM/NASADEM_HGT.001)
+  — NASA data, no restrictions on use (LP DAAC data policy); fetched at run
+  time from Microsoft Planetary Computer's `nasadem` collection, as the
+  second terrain-DEM fallback (after SRTM).
 - **ICESat-2 ATL08** (NASA / NSIDC; Neuenschwander et al.), accessed through
   the SlideRule Earth service (https://slideruleearth.io), used only for
   evaluation (`dsm_calibration/fetch_icesat2_truth.py`).
