@@ -46,6 +46,22 @@ def convert_elevation(dsm_path, out_png_path):
     return shape, min_elev, max_elev
 
 
+def georeference_metadata(dsm_path):
+    """The DSM's CRS and pixel-edge bounds, native and EPSG:4326. The 3D
+    viewer's click probe derives pixel size (for slope) and lat/lon from
+    these plus the PNG's dimensions (3d_visualization/elevation_probe.js)."""
+    from rasterio.warp import transform_bounds
+
+    with rasterio.open(dsm_path) as ds:
+        b = ds.bounds
+        west, south, east, north = transform_bounds(ds.crs, "EPSG:4326", *b)
+        return {
+            "crs": ds.crs.to_string(),
+            "boundsNative": {"left": b.left, "bottom": b.bottom, "right": b.right, "top": b.top},
+            "boundsEPSG4326": {"west": west, "south": south, "east": east, "north": north},
+        }
+
+
 def convert_satellite(geotiff_path, out_jpg_path):
     with rasterio.open(geotiff_path) as ds:
         arr = ds.read()  # (bands, H, W)
@@ -77,7 +93,8 @@ def generate_viewer_assets(dsm_path=DSM_PATH, satellite_path=SATELLITE_SRC_PATH,
         f"this WILL misalign the drape"
     )
 
-    metadata = {"minElevation": min_elev, "maxElevation": max_elev, "units": "meters"}
+    metadata = {"minElevation": min_elev, "maxElevation": max_elev, "units": "meters",
+                **georeference_metadata(dsm_path)}
     meta_path = os.path.join(assets_dir, "metadata.json")
     with open(meta_path, "w") as f:
         json.dump(metadata, f, indent=2)

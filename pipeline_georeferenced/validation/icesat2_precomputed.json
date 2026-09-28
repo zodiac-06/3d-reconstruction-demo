@@ -1,0 +1,20 @@
+{
+  "_comment": "Headline accuracy on the upload page (index.html). Precomputed offline vs ICESat-2 ATL08 lidar, not computed by the live pipeline. A job gets a row only if its AOI overlaps one below with IoU >= min_iou.",
+  "min_iou": 0.5,
+  "aois": [
+    {
+      "name": "Nainital",
+      "bounds_epsg4326": {"west": 79.42, "south": 29.35, "east": 79.51, "north": 29.42},
+      "dem_source": "copernicus",
+      "rmse_canopy_top_m": 14.8,
+      "rmse_ground_m": 12.8
+    },
+    {
+      "name": "Bangalore",
+      "bounds_epsg4326": {"west": 77.5537, "south": 12.9361, "east": 77.6355, "north": 13.0071},
+      "dem_source": "copernicus",
+      "rmse_canopy_top_m": 10.82,
+      "rmse_ground_m": 5.96
+    }
+  ]
+}

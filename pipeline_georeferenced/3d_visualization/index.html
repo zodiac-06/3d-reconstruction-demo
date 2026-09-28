@@ -105,6 +105,31 @@
     width: 100%;
     accent-color: var(--accent);
   }
+  #probe-panel {
+    bottom: 16px;
+    right: 16px;
+    width: 250px;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  #probe-panel .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  #probe-panel .row span:last-child {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  #probe-panel .dim,
+  #probe-panel .row span:first-child {
+    color: var(--text-dim);
+  }
+  #probe-panel .note {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -126,6 +151,20 @@
   <h2>Controls</h2>
   <div><strong>Orbit:</strong> Left-drag to rotate, scroll to zoom, right-drag to pan.</div>
   <div style="margin-top:6px;"><strong>Fly:</strong> WASD to move, drag mouse to look, Q/E to roll.</div>
+  <div style="margin-top:6px;"><strong>Probe:</strong> click the terrain for lat/lon, elevation and slope.</div>
+</div>
+
+<div id="probe-panel" class="panel">
+  <h2>Point probe</h2>
+  <div id="probe-empty" class="dim">Click the terrain.</div>
+  <div id="probe-values" style="display:none">
+    <div class="row"><span>Lat, Lon</span><span id="probe-latlon"></span></div>
+    <div class="row"><span>Elevation</span><span id="probe-elev"></span></div>
+    <div class="row"><span>Slope (30 m-scale)</span><span id="probe-slope"></span></div>
+    <div class="row"><span>Pixel (col, row)</span><span id="probe-pixel"></span></div>
+    <div class="note">Elevation is read from the 16-bit DSM, not the mesh, so it doesn't change with
+      vertical exaggeration. Slope is a central difference over &plusmn;30 m, the terrain DEM's posting.</div>
+  </div>
 </div>
 
 <div id="status-panel" class="panel"></div>
@@ -143,6 +182,7 @@
   import * as THREE from 'three';
   import { createTerrainMesh } from './terrain.js';
   import { setupNavigation } from './controls.js';
+  import { decodeGray16Png, createElevationProbe, intersectHeightfield } from './elevation_probe.js';
 
   const canvas = document.getElementById('app-canvas');
   const modeToggle = document.getElementById('mode-toggle');
@@ -208,12 +248,92 @@
   });
 
   let terrain = null;
+  let probe = null;
+  let probedPixel = null;
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(1.2, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xff4081 })
+  );
+  marker.visible = false;
+  scene.add(marker);
+
+  // The marker sits on the displaced surface, so it follows the slider; the
+  // readout doesn't (it's keyed to the pixel, not the mesh height).
+  function placeMarker() {
+    if (!probedPixel || !terrain) return;
+    const { col, row } = probedPixel;
+    marker.position.set(
+      ((col + 0.5) / probe.width - 0.5) * terrain.planeWidth,
+      terrain.getDisplacementScale() * probe.normalizedAt(col, row),
+      ((row + 0.5) / probe.height - 0.5) * terrain.planeHeight
+    );
+    marker.visible = true;
+  }
+
+  function showProbe(p) {
+    probedPixel = p;
+    document.getElementById('probe-empty').style.display = 'none';
+    document.getElementById('probe-values').style.display = 'block';
+    document.getElementById('probe-latlon').textContent =
+      p.lat === null ? 'n/a (no georeference)' : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
+    document.getElementById('probe-elev').textContent = `${p.elevationM.toFixed(1)} m`;
+    document.getElementById('probe-slope').textContent =
+      p.slopeDeg === null ? 'n/a (no pixel size)' : `${p.slopeDeg.toFixed(1)}°`;
+    document.getElementById('probe-pixel').textContent = `${p.col}, ${p.row}`;
+    placeMarker();
+  }
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+
+  function probeAtClient(clientX, clientY) {
+    if (!terrain || !probe) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    const inv = terrain.mesh.matrixWorld.clone().invert();
+    const origin = raycaster.ray.origin.clone().applyMatrix4(inv);
+    const dir = raycaster.ray.direction.clone().transformDirection(inv);
+    const hit = intersectHeightfield(probe, origin, dir,
+      terrain.planeWidth, terrain.planeHeight, terrain.getDisplacementScale());
+    return hit ? probe.probePixel(hit.col, hit.row) : null;
+  }
+
+  // Left-drag rotates the view, so only a press-and-release that barely moved counts as a click.
+  let downAt = null;
+  renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', e => {
+    if (!downAt || e.button !== 0) return;
+    const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+    downAt = null;
+    if (moved > 4) return;
+    const p = probeAtClient(e.clientX, e.clientY);
+    if (p) showProbe(p);
+  });
 
   exaggerationSlider.addEventListener('input', () => {
     const factor = parseFloat(exaggerationSlider.value);
     exaggerationValue.textContent = `${factor.toFixed(1)}x`;
     if (terrain) terrain.setVerticalExaggeration(factor);
+    placeMarker();
   });
+
+  // Handle for scripted checks (dsm_calibration/test_viewer_probe.py): where
+  // a DSM pixel sits on screen at the current exaggeration.
+  window.viewerProbe = {
+    camera,
+    screenPointForPixel(col, row) {
+      const v = new THREE.Vector3(
+        ((col + 0.5) / probe.width - 0.5) * terrain.planeWidth,
+        terrain.getDisplacementScale() * probe.normalizedAt(col, row),
+        ((row + 0.5) / probe.height - 0.5) * terrain.planeHeight
+      ).applyMatrix4(terrain.mesh.matrixWorld).project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      return { x: rect.left + (v.x + 1) / 2 * rect.width, y: rect.top + (1 - v.y) / 2 * rect.height };
+    },
+    isReady: () => Boolean(terrain && probe),
+  };
 
   // ?assets=assets_bangalore switches the whole viewer to a different
   // pre-generated assets folder (see dsm_calibration/geotiff_to_viewer_assets.py's
@@ -237,6 +357,10 @@
         }
       );
       scene.add(terrain.mesh);
+
+      const pngResponse = await fetch(`./${assetsDir}/elevation_16bit.png`);
+      if (!pngResponse.ok) throw new Error(`elevation_16bit.png: ${pngResponse.status}`);
+      probe = createElevationProbe(await decodeGray16Png(await pngResponse.arrayBuffer()), terrain.metadata);
     } catch (err) {
       console.error(err);
       showError(`Failed to load terrain assets: ${err.message}`);

@@ -11,7 +11,8 @@ import * as THREE from 'three';
  * @param {number} [options.segmentsY=256] - Grid subdivisions along Y (Z after rotation).
  * @param {number} [options.verticalExaggeration=1.5] - Visual height emphasis multiplier.
  * @param {THREE.WebGLRenderer} [options.renderer] - WebGLRenderer instance for anisotropy check.
- * @returns {Promise<{mesh: THREE.Mesh, setVerticalExaggeration: (factor:number)=>void, dispose: ()=>void}>}
+ * @returns {Promise<{mesh: THREE.Mesh, metadata: object, planeWidth: number, planeHeight: number,
+ *   getDisplacementScale: ()=>number, setVerticalExaggeration: (factor:number)=>void, dispose: ()=>void}>}
  */
 export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl, options = {}) {
   const {
@@ -104,6 +105,10 @@ export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl,
     material.displacementScale = normalizedScaleFactor * factor;
   }
 
+  function getDisplacementScale() {
+    return material.displacementScale;
+  }
+
   function dispose() {
     geometry.dispose();
     material.dispose();
@@ -111,7 +116,7 @@ export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl,
     satelliteTexture.dispose();
   }
 
-  return { mesh, setVerticalExaggeration, dispose };
+  return { mesh, metadata, planeWidth, planeHeight, getDisplacementScale, setVerticalExaggeration, dispose };
 }
 
 function configureTexture(texture, maxAnisotropy) {
