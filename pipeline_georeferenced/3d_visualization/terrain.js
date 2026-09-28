@@ -12,6 +12,7 @@ import * as THREE from 'three';
  * @param {number} [options.verticalExaggeration=1.5] - Visual height emphasis multiplier.
  * @param {THREE.WebGLRenderer} [options.renderer] - WebGLRenderer instance for anisotropy check.
  * @returns {Promise<{mesh: THREE.Mesh, metadata: object, planeWidth: number, planeHeight: number,
+ *   satelliteTexture: THREE.Texture, setMap: (texture:THREE.Texture)=>void,
  *   getDisplacementScale: ()=>number, setVerticalExaggeration: (factor:number)=>void, dispose: ()=>void}>}
  */
 export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl, options = {}) {
@@ -105,6 +106,12 @@ export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl,
     material.displacementScale = normalizedScaleFactor * factor;
   }
 
+  // Swap the draped texture (render modes); pass satelliteTexture to restore.
+  function setMap(texture) {
+    material.map = texture;
+    material.needsUpdate = true;
+  }
+
   function getDisplacementScale() {
     return material.displacementScale;
   }
@@ -116,7 +123,7 @@ export async function createTerrainMesh(demPngUrl, metaJsonUrl, satelliteJpgUrl,
     satelliteTexture.dispose();
   }
 
-  return { mesh, metadata, planeWidth, planeHeight, getDisplacementScale, setVerticalExaggeration, dispose };
+  return { mesh, metadata, planeWidth, planeHeight, satelliteTexture, setMap, getDisplacementScale, setVerticalExaggeration, dispose };
 }
 
 function configureTexture(texture, maxAnisotropy) {
