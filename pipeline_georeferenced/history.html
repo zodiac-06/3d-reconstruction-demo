@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vision2Scale — Job History</title>
+<style>
+  html, body { margin: 0; min-height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #e8eaed; }
+  .wrap { max-width: 1200px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #9aa0a6; font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+  .subtitle a, td a { color: #4fc3f7; }
+  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; white-space: nowrap; }
+  th { color: #9aa0a6; font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .status.done { background: rgba(12,163,12,0.18); color: #7ed97e; }
+  .status.failed { background: rgba(255,107,107,0.15); color: #ff8a8a; }
+  .status.running { background: rgba(250,178,25,0.15); color: #fbc94f; }
+  td.links { white-space: normal; min-width: 200px; }
+  .links a { display: inline-block; margin: 0 12px 4px 0; }
+  .muted { color: #9aa0a6; }
+  .err { color: #ff8a8a; white-space: normal; max-width: 170px; margin-top: 4px; }
+  #empty, #error { padding: 24px; color: #9aa0a6; }
+  #error { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Job history</h1>
+  <div class="subtitle">Every processed AOI, newest first. Each finished job keeps its own DSM GeoTIFF, tagged with units,
+    vertical datum and DEM source. The 3D viewer and 2D map show only the latest job's output, so they're linked for that job only.
+    <a href="/index.html">← New analysis</a></div>
+  <div class="panel">
+    <table id="jobs" style="display:none">
+      <thead><tr><th>When (UTC)</th><th>Status</th><th>Input</th><th>AOI (W, S, E, N)</th><th>DEM</th>
+        <th class="num">ICESat-2 RMSE</th><th>Outputs</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="empty" style="display:none">No jobs yet. <a href="/index.html">Process one →</a></div>
+    <div id="error" style="display:none"></div>
+  </div>
+</div>
+<script>
+  const MODES = { cropped: 'Cropped upload', upload_and_crop: 'Upload + crop', fetch_by_bounds: 'Sentinel-2 fetch' };
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  (async function () {
+    let list;
+    try {
+      const res = await fetch('/jobs');
+      if (!res.ok) throw new Error(res.statusText);
+      list = await res.json();
+    } catch (err) {
+      const e = document.getElementById('error'); e.style.display = 'block'; e.textContent = `Could not load jobs: ${err.message}`;
+      return;
+    }
+    if (!list.length) { document.getElementById('empty').style.display = 'block'; return; }
+    const latestDone = list.find(j => j.status === 'done');
+    document.querySelector('#jobs tbody').innerHTML = list.map(j => {
+      const b = j.bounds_epsg4326;
+      const aoi = b ? `${b.west.toFixed(4)}, ${b.south.toFixed(4)},<br>${b.east.toFixed(4)}, ${b.north.toFixed(4)}` : '—';
+      const when = j.created_at ? j.created_at.replace('T', ' ').replace('+00:00', '') : '<span class="muted">before timestamps</span>';
+      const id = encodeURIComponent(j.id);
+      const links = [];
+      if (j.dsm_download) links.push(`<a href="${esc(j.dsm_download)}">DSM GeoTIFF</a>`);
+      if (j.status === 'done') links.push(`<a href="/dem_court/index.html?job=${id}">DEM Court</a>`);
+      if (j.validation_rmse_canopy_top_m !== null) links.push(`<a href="/validation/index.html?job=${id}">Validation</a>`);
+      if (latestDone && j.id === latestDone.id) links.push('<a href="/3d_visualization/index.html">3D view</a>', '<a href="/leaflet_pitch/index.html">2D map</a>');
+      const rmse = j.validation_rmse_canopy_top_m !== null
+        ? `${j.validation_rmse_canopy_top_m.toFixed(1)} m <span class="muted">(${j.validation_n} pts)</span>` : '<span class="muted">—</span>';
+      return `<tr><td>${when}</td>` +
+        `<td><span class="status ${esc(j.status)}">${esc(j.status)}</span>${j.error ? `<div class="err">${esc(j.error)}</div>` : ''}</td>` +
+        `<td>${esc(MODES[j.input_mode] || j.input_mode)}</td><td>${aoi}</td>` +
+        `<td>${j.dem_source ? `${esc(j.dem_source)} <span class="muted">${esc(j.vertical_datum)}</span>` : '—'}</td>` +
+        `<td class="num">${rmse}</td><td class="links">${links.join('') || '<span class="muted">—</span>'}</td></tr>`;
+    }).join('');
+    document.getElementById('jobs').style.display = 'table';
+  })();
+</script>
+</body>
+</html>

@@ -255,3 +255,16 @@ access to slideruleearth.io and cdn.proj.org).
 
 `python validation/test_evidence.py` checks the scoring against a synthetic
 plane DSM whose correct values are known in closed form.
+
+## Job history and DSM downloads
+
+Every finished job keeps its own copy of the DSM (`jobs_meta/<id>_dsm.tif`;
+the pipeline itself overwrites `output_dsm.tif` each run), tagged
+`UNITS=metre`, `VERTICAL_DATUM`, `DEM_SOURCE` and `METHOD`, so a downloaded
+file says what its heights are. It's served at `GET /jobs/{id}/dsm.tif` and
+linked from the upload page. `GET /jobs` lists every job, newest first, and
+`history.html` shows them with their DSM, DEM Court and validation links.
+The 3D viewer and 2D map show only the latest job's output, so history links
+them for that job only. `python test_jobs_api.py` drives `POST /jobs` with the
+heavy stages stubbed and checks the stored DSM, its tags, the list and the
+downloads.

@@ -45,7 +45,8 @@
 <body>
 <div class="wrap">
   <h1>Georeferenced DSM Pipeline</h1>
-  <div class="subtitle">GeoTIFF → terrain DEM (Copernicus GLO-30) + Depth Anything detail → absolute-elevation DSM → viewable terrain</div>
+  <div class="subtitle">GeoTIFF → terrain DEM (Copernicus GLO-30) + Depth Anything detail → absolute-elevation DSM → viewable terrain
+    · <a href="/history.html" style="color:#4fc3f7">Job history</a></div>
 
   <div class="scope-note">
     <strong>Choose how to supply the area of interest.</strong> An already-cropped GeoTIFF is used as-is.
@@ -84,6 +85,7 @@
     <div id="status"></div>
     <div id="result">
       <div id="metrics-summary"></div>
+      <a id="link-dsm" href="#" style="display:none">Download DSM (GeoTIFF) ↓</a>
       <a id="link-map" href="/leaflet_pitch/index.html">Open 2D context map →</a>
       <a id="link-3d" href="/3d_visualization/index.html">Open 3D terrain flythrough →</a>
       <a id="link-court" href="/dem_court/index.html">Compare DEM sources (DEM Court) →</a>
@@ -262,6 +264,9 @@
         `RMSE: ${m.rmse.toFixed(2)}m &nbsp; MAE: ${m.mae.toFixed(2)}m &nbsp; correlation: ${m.correlation.toFixed(3)}<br>` +
         `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}</details>`;
       document.getElementById('link-court').href = `/dem_court/index.html?job=${encodeURIComponent(data.id)}`;
+      const linkDsm = document.getElementById('link-dsm');
+      linkDsm.style.display = data.dsm_download ? 'inline-block' : 'none';
+      if (data.dsm_download) linkDsm.href = data.dsm_download;
       const v = data.validation || {};
       const linkVal = document.getElementById('link-validation');
       const canopy = v.available ? v.stats.canopy_top : null;

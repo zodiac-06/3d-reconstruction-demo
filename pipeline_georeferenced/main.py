@@ -43,12 +43,14 @@ import shutil
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -341,7 +343,8 @@ async def create_job(
 
     job_id = str(uuid4())
     jobs[job_id] = {"id": job_id, "status": "running", "error": None, "metrics": None,
-                     "view_urls": None, "input_mode": mode}
+                     "view_urls": None, "input_mode": mode,
+                     "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     _save_jobs()
 
     timings = {}
@@ -354,11 +357,38 @@ async def create_job(
         jobs[job_id].update(status="failed", error=str(exc))
     if jobs[job_id]["status"] == "done":
         jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
+        jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
     timings["total"] = round(time.perf_counter() - started, 2)
     jobs[job_id]["timings_s"] = timings
 
     _save_jobs()
     return jobs[job_id]
+
+
+def _dsm_path(job_id):
+    return BASE_DIR / JOBS_DIR_NAME / f"{job_id}_dsm.tif"
+
+
+def _save_job_dsm(job_id, metrics):
+    """Keep this job's DSM (the pipeline overwrites output_dsm.tif on every
+    job) and tag it so the file says what its heights are: without the
+    vertical datum a downloaded DSM is ambiguous by metres (Copernicus's
+    EGM2008 and SRTM's EGM96 differ by ~3 m at Nainital)."""
+    import rasterio
+
+    path = _dsm_path(job_id)
+    shutil.copyfile(DSM_OUTPUT_PATH, path)
+    with rasterio.open(path, "r+") as ds:
+        ds.update_tags(
+            UNITS="metre",
+            VERTICAL_DATUM=metrics["vertical_datum"],
+            DEM_SOURCE=metrics["dem_source"],
+            METHOD="DEM + Depth Anything V2 high-pass detail layer (s = 1, 30 m)",
+            PRODUCER="DepthWizard georeferenced pipeline",
+            JOB_ID=job_id,
+        )
+        ds.set_band_description(1, f"surface elevation (m, {metrics['vertical_datum']})")
+    return f"/jobs/{job_id}/dsm.tif"
 
 
 def _truth_dirs():
@@ -386,6 +416,36 @@ def _save_validation(job_id, vertical_datum):
         json.dump(evidence, f)
     return {"available": True, **{k: evidence[k] for k in
                                   ("source_run", "vertical_datum", "n_segments", "n_on_dsm", "stats")}}
+
+
+@app.get("/jobs")
+def list_jobs():
+    """Every job, newest first, as the summary the history page needs."""
+    keys = ("id", "status", "created_at", "input_mode", "error", "bounds_epsg4326", "dsm_download")
+    out = []
+    for order, job in enumerate(jobs.values()):  # insertion order breaks same-second ties
+        m = job.get("metrics") or {}
+        v = job.get("validation") or {}
+        canopy = (v.get("stats") or {}).get("canopy_top") or {}
+        out.append({**{k: job.get(k) for k in keys},
+                    "dem_source": m.get("dem_source"), "vertical_datum": m.get("vertical_datum"),
+                    "validation_rmse_canopy_top_m": canopy.get("rmse") if v.get("available") else None,
+                    "validation_n": canopy.get("n") if v.get("available") else None,
+                    "_order": order})
+    # jobs from before created_at existed sort last
+    out.sort(key=lambda j: (j["created_at"] or "", j.pop("_order")), reverse=True)
+    return out
+
+
+@app.get("/jobs/{job_id}/dsm.tif")
+def download_dsm(job_id: str):
+    """This job's DSM as a GeoTIFF, tagged with units, vertical datum and DEM source."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not _dsm_path(job_id).exists():
+        raise HTTPException(status_code=409, detail="No DSM kept for this job (failed, or run before downloads existed)")
+    return FileResponse(_dsm_path(job_id), media_type="image/tiff",
+                        filename=f"depthwizard_dsm_{job_id[:8]}.tif")
 
 
 @app.get("/jobs/{job_id}")
