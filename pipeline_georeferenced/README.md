@@ -268,3 +268,15 @@ The 3D viewer and 2D map show only the latest job's output, so history links
 them for that job only. `python test_jobs_api.py` drives `POST /jobs` with the
 heavy stages stubbed and checks the stored DSM, its tags, the list and the
 downloads.
+
+## What the server publishes
+
+The whole folder is mounted as one static root, so the pages' relative paths
+keep working, but `main.PublicStaticFiles` serves only what the pages load:
+`index.html`, `history.html`, the 3D viewer and its assets, the 2D map, DEM
+Court's page and `.f32` grids, the validation page and its two data files,
+and `qgis_prep/data/geo_metadata.json`. Source, the job store, uploaded or
+fetched GeoTIFFs, kept DSMs (downloaded through `/jobs/{id}/dsm.tif`
+instead), lidar truth and model weights return 404. A new page, or a new
+file an existing page loads, has to be added to `PUBLIC_FILES` /
+`PUBLIC_TREES` in `main.py`; `python test_static_files.py` checks both lists.

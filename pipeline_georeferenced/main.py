@@ -489,11 +489,47 @@ def get_dem_court(job_id: str, fabdem: bool = False):
     return dict(manifest, job_id=job_id)
 
 
-# Serves qgis_prep/data/, leaflet_pitch/, 3d_visualization/, dsm_calibration/
-# all at their existing relative paths to each other -- those pages already
-# use paths like ../qgis_prep/data/geo_metadata.json and
-# ../3d_visualization/index.html, so mounting this whole directory as one
-# static root (instead of separate mounts per subfolder) is what makes
-# those existing, already-tested relative paths keep working unchanged.
+# The pages use paths like ../qgis_prep/data/geo_metadata.json and
+# ../3d_visualization/index.html, so this directory stays mounted as one
+# static root -- but only the files the pages load are served. The folder
+# also holds the source, the job store, uploaded/fetched GeoTIFFs, lidar
+# truth and model weights, none of which should be public on the demo URL.
+PUBLIC_FILES = {
+    "index.html", "history.html",
+    "3d_visualization/index.html", "leaflet_pitch/index.html",
+    "dem_court/index.html",
+    "validation/index.html", "validation/headline.js", "validation/icesat2_precomputed.json",
+    "qgis_prep/data/geo_metadata.json",
+}
+# (directory prefix, allowed extensions): the 3D viewer and its asset
+# folders (assets/, assets_bangalore/, ...), DEM Court's per-AOI grids
+PUBLIC_TREES = (
+    ("3d_visualization/", {".html", ".js", ".png", ".jpg", ".jpeg", ".json"}),
+    ("dem_court/cache/", {".f32"}),
+)
+
+
+def is_public_path(path):
+    """Whether a static request path (relative to BASE_DIR) may be served."""
+    path = path.replace("\\", "/").lstrip("/")
+    if path in ("", "."):
+        return True  # -> index.html
+    parts = path.split("/")
+    if any(p in ("..", ".") or p.startswith(".") for p in parts):
+        return False
+    path = "/".join(p for p in parts if p)
+    if path in PUBLIC_FILES or f"{path}/index.html" in PUBLIC_FILES:
+        return True
+    ext = os.path.splitext(path)[1].lower()
+    return any(path.startswith(prefix) and ext in exts for prefix, exts in PUBLIC_TREES)
+
+
+class PublicStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        if not is_public_path(path):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return await super().get_response(path, scope)
+
+
 # Registered last so it never shadows /jobs* or /api/* above.
-app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="pipeline_static")
+app.mount("/", PublicStaticFiles(directory=str(BASE_DIR), html=True), name="pipeline_static")
