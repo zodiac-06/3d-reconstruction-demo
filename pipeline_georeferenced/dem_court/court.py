@@ -83,6 +83,23 @@ def _snapshot_grid(ref_path, grid_path):
         dst.write(np.zeros((profile["height"], profile["width"]), np.uint8), 1)
 
 
+def ensure_grid(bbox, crop_path):
+    """Snapshot crop_path's pixel grid into this AOI's cache unless it's
+    already there. Returns the grid path, or None when there is no cached
+    grid and crop_path doesn't match bbox (replaced by a later job). main.py
+    calls this when a job finishes, while it still owns the crop, so later
+    court visits never read the pipeline's live crop."""
+    cache = os.path.join(CACHE_ROOT, aoi_key(bbox))
+    grid_path = os.path.join(cache, "grid.tif")
+    if os.path.exists(grid_path):
+        return grid_path
+    if not (crop_path and os.path.exists(crop_path) and same_bounds(bounds_of(crop_path), bbox)):
+        return None
+    os.makedirs(cache, exist_ok=True)
+    _snapshot_grid(crop_path, grid_path)
+    return grid_path
+
+
 def _pixel_lonlat(grid_path):
     with rasterio.open(grid_path) as g:
         rows, cols = np.mgrid[0:g.height, 0:g.width]
@@ -171,13 +188,9 @@ def build_court(bbox, fetch_mod, current_crop=None, include_fabdem=False, icesat
         manifest["sources"] = {s: v for s, v in manifest["sources"].items() if s in wanted}
         return _finish(manifest, include_fabdem), cache
 
-    if not os.path.exists(grid_path):
-        if not (current_crop and os.path.exists(current_crop)
-                and same_bounds(bounds_of(current_crop), bbox)):
-            raise LookupError("This job's AOI crop has been replaced by a later job and the DEM "
-                              "Court has no cache for it -- re-run the job, then open the court.")
-        os.makedirs(cache, exist_ok=True)
-        _snapshot_grid(current_crop, grid_path)
+    if ensure_grid(bbox, current_crop) is None:
+        raise LookupError("This job's AOI crop has been replaced by a later job and the DEM "
+                          "Court has no cache for it -- re-run the job, then open the court.")
 
     with rasterio.open(grid_path) as g:
         grid = {"crs": g.crs.to_string(), "epsg": g.crs.to_epsg(), "transform": list(g.transform)[:6],

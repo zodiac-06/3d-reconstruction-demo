@@ -422,12 +422,27 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
     if jobs[job_id]["status"] == "done":
         jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
         jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
+        _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
     timings["total"] = round(time.perf_counter() - started, 2)
     timings["queued"] = queued_s
     jobs[job_id]["timings_s"] = timings
 
     _save_jobs()
     return jobs[job_id]
+
+
+def _snapshot_court_grid(bounds):
+    """Record this job's pixel grid for DEM Court while the job still owns
+    the pipeline's crop; the court then never reads the live crop, which a
+    later job may be rewriting. Best effort: the DSM is still good if this
+    fails, and the court falls back to its own check."""
+    if not bounds:
+        return
+    try:
+        dem_court_mod.ensure_grid((bounds["west"], bounds["south"], bounds["east"], bounds["north"]),
+                                  str(CROPPED_PATH))
+    except Exception:
+        pass
 
 
 def _dsm_path(job_id):

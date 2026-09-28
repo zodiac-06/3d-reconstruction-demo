@@ -55,6 +55,8 @@ def main():
         (tmp / "jobs").mkdir()
         app_main.DSM_CAL_DIR, app_main.DSM_OUTPUT_PATH = tmp / "cal", out
         app_main.JOBS_STORE_PATH = tmp / "jobs_store.json"
+        app_main.CROPPED_PATH = truth_run / "aoi_cropped.tif"      # the "current crop" job 1 leaves behind
+        app_main.dem_court_mod.CACHE_ROOT = str(tmp / "court_cache")
         app_main.jobs.clear()
         app_main.jobs["old"] = {"id": "old", "status": "done", "metrics": {}, "input_mode": "cropped"}  # pre-timestamps
 
@@ -87,6 +89,15 @@ def main():
         check(v["available"] and v["stats"]["canopy_top"]["n"] > 300,
               f"job 1 scored through create_job: {v['stats']['canopy_top']['n']} ICESat-2 points, "
               f"RMSE {v['stats']['canopy_top']['rmse']:.2f} m")
+        b = meta["bounds_epsg4326"]
+        bbox = (b["west"], b["south"], b["east"], b["north"])
+        grid = tmp / "court_cache" / app_main.dem_court_mod.aoi_key(bbox) / "grid.tif"
+        with rasterio.open(grid) as g, rasterio.open(app_main.CROPPED_PATH) as c:
+            same_grid = g.crs == c.crs and g.transform == c.transform and g.shape == c.shape
+        check(same_grid, "job 1 recorded its DEM Court grid at finish (same CRS/transform/shape as its crop)")
+        app_main.CROPPED_PATH = tmp / "gone.tif"                     # a later job replaced the crop
+        check(app_main.dem_court_mod.ensure_grid(bbox, str(app_main.CROPPED_PATH)) == str(grid),
+              "court grid still found after the live crop is gone")
         j2 = post()
         j3 = post()
         check(j3["status"] == "failed" and "dsm_download" not in j3, "job 3 failed: no DSM kept")
