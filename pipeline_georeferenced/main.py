@@ -165,6 +165,12 @@ def _save_jobs():
 
 
 jobs = _load_jobs()
+# A job that was queued or running when the server stopped will never
+# finish (jobs run in this process); say so instead of leaving clients
+# polling forever.
+for _job in jobs.values():
+    if _job.get("status") in ("queued", "running"):
+        _job.update(status="failed", error="server restarted before this job finished; please resubmit")
 
 
 @app.get("/api/health")

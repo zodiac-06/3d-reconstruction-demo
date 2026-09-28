@@ -119,6 +119,25 @@ def main():
         check(client.get("/jobs/old/dsm.tif").status_code == 409, "pre-download job's DSM -> 409")
         check(client.get("/jobs/nope/dsm.tif").status_code == 404, "unknown job -> 404")
 
+    # A job left queued/running by a server restart is marked failed on startup
+    import os
+    import subprocess
+    name = "jobs_meta_restart_test"
+    store = ROOT / f"{name}_store.json"
+    store.write_text(json.dumps({"r1": {"id": "r1", "status": "running"}, "q1": {"id": "q1", "status": "queued"},
+                                 "d1": {"id": "d1", "status": "done"}}))
+    try:
+        out = subprocess.run([sys.executable, "-c", "import main, json; print(json.dumps(main.jobs))"],
+                             cwd=ROOT, env={**os.environ, "PIPELINE_JOBS_DIR": name},
+                             capture_output=True, text=True, check=True)
+        after = json.loads(out.stdout.strip().splitlines()[-1])
+    finally:
+        store.unlink(missing_ok=True)
+        (ROOT / name).exists() and (ROOT / name).rmdir()
+    check(after["r1"]["status"] == after["q1"]["status"] == "failed" and "restarted" in after["r1"]["error"]
+          and after["d1"]["status"] == "done",
+          "restart: running/queued jobs marked failed with a reason, done jobs untouched")
+
     print("\nFAIL:\n  " + "\n  ".join(fails) if fails else "\nPASS")
     raise SystemExit(1 if fails else 0)
 
