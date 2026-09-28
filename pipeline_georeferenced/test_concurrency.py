@@ -107,7 +107,6 @@ def main():
         check(statuses == ["queued", "running"], f"mid-run statuses: {statuses}")
 
         a.join(); b.join()
-        server.should_exit = True
         check(results["a"]["status"] == "done" and results["b"]["status"] == "done", "both jobs finished")
         spans.sort()
         check(len(spans) == 2 and spans[0][1] <= spans[1][0],
@@ -117,15 +116,7 @@ def main():
         with rasterio.open(tmp / "jobs" / f"{results['a']['id']}_dsm.tif") as d:
             check(d.tags().get("JOB_ID") == results["a"]["id"], "first job's kept DSM is its own")
 
-        # --- wait=false: respond at once, run in the background, poll ---
-        server = uvicorn.Server(uvicorn.Config(app_main.app, host="127.0.0.1", port=port,
-                                               lifespan="off", log_level="warning"))
-        threading.Thread(target=server.run, daemon=True).start()
-        for _ in range(100):
-            try:
-                httpx.get(base + "/index.html"); break
-            except httpx.ConnectError:
-                time.sleep(0.05)
+        # --- wait=false on the same server: respond at once, run in the background, poll ---
         received.clear()
         payload = b"GeoTIFF bytes " * 1000
         t0 = time.perf_counter()
