@@ -291,3 +291,9 @@ this, because proxies such as the Cloudflare tunnel cut requests after about
 and output paths); others wait as `queued`, and the server keeps answering
 other requests meanwhile. `python test_concurrency.py` checks both modes on a
 real uvicorn server with a stub pipeline.
+
+## Tests
+
+`python run_tests.py` runs every test script here (about 20 s, no model
+weights or network; needs httpx, uvicorn and node >= 18). Each script also
+runs on its own and says in its docstring what it checks and against what.
