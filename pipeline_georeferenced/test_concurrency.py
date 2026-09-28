@@ -5,7 +5,10 @@ never run the pipeline at the same time (it writes fixed paths).
 Starts the real app under uvicorn on a local port with the heavy stages
 stubbed: the stub pipeline takes PIPELINE_S seconds and records when it
 starts and ends. Two uploads are sent 0.3 s apart; while the first runs,
-a page and GET /jobs are timed and the job statuses read.
+a page and GET /jobs are timed and the job statuses read. Then the same
+with POST /jobs?wait=false: the response must come back at once, the
+upload's bytes must reach the pipeline after the request has closed, and
+polling GET /jobs/{id} must end at "done".
 
     python test_concurrency.py
 """
@@ -64,7 +67,13 @@ def main():
             return {"metrics": {"dem_source": "copernicus", "vertical_datum": "EGM2008"},
                     "view_urls": {}, "bounds_epsg4326": meta["bounds_epsg4326"]}
 
-        app_main._prepare_cropped_input = lambda *a: {"filename": "a.tif"}
+        received = []
+
+        def fake_prepare(mode, geotiff, bounds, timings):
+            received.append(geotiff.file.read() if geotiff is not None else None)
+            return {"filename": geotiff.filename if geotiff is not None else None}
+
+        app_main._prepare_cropped_input = fake_prepare
         app_main._run_pipeline = fake_pipeline
 
         sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
@@ -107,6 +116,38 @@ def main():
         check(qb > PIPELINE_S - 0.5, f"second job waited {qb:.2f} s in the queue")
         with rasterio.open(tmp / "jobs" / f"{results['a']['id']}_dsm.tif") as d:
             check(d.tags().get("JOB_ID") == results["a"]["id"], "first job's kept DSM is its own")
+
+        # --- wait=false: respond at once, run in the background, poll ---
+        server = uvicorn.Server(uvicorn.Config(app_main.app, host="127.0.0.1", port=port,
+                                               lifespan="off", log_level="warning"))
+        threading.Thread(target=server.run, daemon=True).start()
+        for _ in range(100):
+            try:
+                httpx.get(base + "/index.html"); break
+            except httpx.ConnectError:
+                time.sleep(0.05)
+        received.clear()
+        payload = b"GeoTIFF bytes " * 1000
+        t0 = time.perf_counter()
+        r = httpx.post(base + "/jobs?wait=false", files={"geotiff": ("up.tif", payload, "image/tiff")}, timeout=30)
+        post_s = time.perf_counter() - t0
+        job = r.json()
+        check(r.status_code == 200 and post_s < 0.5 and job["status"] in ("queued", "running"),
+              f"wait=false answered in {post_s * 1000:.0f} ms with status '{job['status']}'")
+        polls = 0
+        while job["status"] in ("queued", "running") and polls < 100:
+            time.sleep(0.2); polls += 1
+            job = httpx.get(base + f"/jobs/{job['id']}").json()
+        check(job["status"] == "done" and job["dsm_download"], f"polled to done after {polls} polls")
+        check(received == [payload], f"pipeline got the upload's {len(payload):,} bytes after the request closed")
+        check(not (tmp / "jobs" / f"{job['id']}_upload.tif").exists(), "background upload copy removed")
+        r = httpx.post(base + "/jobs?wait=false", data={"west": 79.42, "south": 29.35, "east": 79.51, "north": 29.42})
+        job = r.json()
+        while job["status"] in ("queued", "running"):
+            time.sleep(0.2)
+            job = httpx.get(base + f"/jobs/{job['id']}").json()
+        check(job["status"] == "done" and received[-1] is None, "wait=false without a file (fetch by bounds) works")
+        server.should_exit = True
 
     print("\nFAIL:\n  " + "\n  ".join(fails) if fails else "\nPASS")
     raise SystemExit(1 if fails else 0)

@@ -46,10 +46,11 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -343,6 +344,10 @@ def create_job(
     north: float | None = Form(None),
     dem_source: str | None = Form(
         None, description="Preferred terrain DEM: copernicus (default), srtm, nasadem, or fabdem"),
+    wait: bool = Query(
+        True, description="true: respond when the job is finished. false: respond at once with "
+                          "the queued job and poll GET /jobs/{id} -- for proxies that cut long "
+                          "requests (Cloudflare returns 524 after ~100 s)"),
 ):
     dem_source = dem_source or DEM_SOURCE
     try:
@@ -360,9 +365,39 @@ def create_job(
         _save_jobs()
 
     queued_at = time.perf_counter()
-    with _PIPELINE_LOCK:
-        return _run_job(job_id, mode, geotiff, bounds, dem_source, sources,
-                        queued_s=round(time.perf_counter() - queued_at, 2))
+
+    def run(upload):
+        with _PIPELINE_LOCK:
+            return _run_job(job_id, mode, upload, bounds, dem_source, sources,
+                            queued_s=round(time.perf_counter() - queued_at, 2))
+
+    if wait:
+        return run(geotiff)
+
+    # The request's UploadFile is closed once the response is sent, so the
+    # background job gets its own copy (the pipeline's input paths are
+    # shared and may only be written under _PIPELINE_LOCK).
+    upload = None
+    if geotiff is not None and geotiff.filename:
+        spool = BASE_DIR / JOBS_DIR_NAME / f"{job_id}_upload.tif"
+        with open(spool, "wb") as f:
+            shutil.copyfileobj(geotiff.file, f)
+        upload = SimpleNamespace(filename=geotiff.filename, path=spool)
+
+    def run_background():
+        f = None
+        try:
+            if upload is not None:
+                f = open(upload.path, "rb")
+            run(SimpleNamespace(filename=upload.filename, file=f) if upload else None)
+        finally:
+            if f is not None:
+                f.close()
+                upload.path.unlink(missing_ok=True)
+
+    threading.Thread(target=run_background, name=f"job-{job_id[:8]}", daemon=True).start()
+    with _JOBS_LOCK:
+        return dict(jobs[job_id])
 
 
 def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):

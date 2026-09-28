@@ -204,6 +204,8 @@
       `${aoi.rmse_ground_m} m vs ground<br>${tag}${demNote}</div>`;
   }
 
+  const POLL_MS = 2000;
+
   async function submitJob() {
     const statusEl = document.getElementById('status');
     const resultEl = document.getElementById('result');
@@ -231,10 +233,22 @@
     resultEl.style.display = 'none';
 
     try {
-      const res = await fetch('/jobs', { method: 'POST', body: formData });
-      const data = await res.json();
-
+      // Start the job and poll it, rather than holding one request open for
+      // the whole run: proxies like Cloudflare cut requests after ~100 s.
+      const res = await fetch('/jobs?wait=false', { method: 'POST', body: formData });
+      let data = await res.json();
       if (!res.ok) return fail(`Rejected: ${data.detail || res.statusText}`);
+      const t0 = Date.now();
+      while (data.status === 'queued' || data.status === 'running') {
+        const secs = Math.round((Date.now() - t0) / 1000);
+        statusEl.textContent = data.status === 'queued'
+          ? `Queued behind another job… ${secs}s`
+          : `Processing (DEM fetch + depth estimation + fusion)… ${secs}s`;
+        await new Promise(r => setTimeout(r, POLL_MS));
+        const poll = await fetch(`/jobs/${encodeURIComponent(data.id)}`);
+        if (!poll.ok) return fail(`Lost track of job ${data.id}: ${poll.status} ${poll.statusText}`);
+        data = await poll.json();
+      }
       if (data.status !== 'done') return fail(`Failed: ${data.error || 'unknown error'}`);
 
       const m = data.metrics;

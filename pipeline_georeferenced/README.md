@@ -280,3 +280,14 @@ fetched GeoTIFFs, kept DSMs (downloaded through `/jobs/{id}/dsm.tif`
 instead), lidar truth and model weights return 404. A new page, or a new
 file an existing page loads, has to be added to `PUBLIC_FILES` /
 `PUBLIC_TREES` in `main.py`; `python test_static_files.py` checks both lists.
+
+## Long jobs behind a proxy
+
+`POST /jobs` waits for the job by default. `POST /jobs?wait=false` answers at
+once with the queued job, runs it in the background, and the client polls
+`GET /jobs/{id}` until `status` is `done` or `failed`; the upload page does
+this, because proxies such as the Cloudflare tunnel cut requests after about
+100 s (error 524). Jobs run one at a time (they share the pipeline's input
+and output paths); others wait as `queued`, and the server keeps answering
+other requests meanwhile. `python test_concurrency.py` checks both modes on a
+real uvicorn server with a stub pipeline.
