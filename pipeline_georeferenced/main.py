@@ -41,6 +41,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -147,9 +148,19 @@ def _load_jobs():
     return {}
 
 
+# Jobs run on FastAPI's worker threads (create_job is a plain def), so the
+# server keeps answering page and API requests while one runs. The pipeline
+# writes fixed paths (the crop, output_dsm.tif, the viewer assets), so only
+# one job may run at a time: _PIPELINE_LOCK serialises them, and a waiting
+# job shows as "queued". _JOBS_LOCK guards the job store's writes.
+_PIPELINE_LOCK = threading.Lock()
+_JOBS_LOCK = threading.RLock()
+
+
 def _save_jobs():
-    with open(JOBS_STORE_PATH, "w") as f:
-        json.dump(jobs, f, indent=2)
+    with _JOBS_LOCK:
+        with open(JOBS_STORE_PATH, "w") as f:
+            json.dump(jobs, f, indent=2)
 
 
 jobs = _load_jobs()
@@ -322,7 +333,7 @@ def _run_pipeline(dem_source, sources, timings):
 
 
 @app.post("/jobs")
-async def create_job(
+def create_job(
     geotiff: UploadFile | None = File(
         None, description="A GeoTIFF: already cropped (no bounds), or a larger scene to crop "
                           "to the bounds -- see README.md"),
@@ -342,11 +353,23 @@ async def create_job(
     mode = _resolve_input_mode(geotiff, bounds)
 
     job_id = str(uuid4())
-    jobs[job_id] = {"id": job_id, "status": "running", "error": None, "metrics": None,
-                     "view_urls": None, "input_mode": mode,
-                     "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    _save_jobs()
+    with _JOBS_LOCK:
+        jobs[job_id] = {"id": job_id, "status": "queued", "error": None, "metrics": None,
+                        "view_urls": None, "input_mode": mode,
+                        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        _save_jobs()
 
+    queued_at = time.perf_counter()
+    with _PIPELINE_LOCK:
+        return _run_job(job_id, mode, geotiff, bounds, dem_source, sources,
+                        queued_s=round(time.perf_counter() - queued_at, 2))
+
+
+def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
+    """One job, start to finish. Caller holds _PIPELINE_LOCK."""
+    with _JOBS_LOCK:
+        jobs[job_id]["status"] = "running"
+        _save_jobs()
     timings = {}
     started = time.perf_counter()
     try:
@@ -359,6 +382,7 @@ async def create_job(
         jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
         jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
     timings["total"] = round(time.perf_counter() - started, 2)
+    timings["queued"] = queued_s
     jobs[job_id]["timings_s"] = timings
 
     _save_jobs()
@@ -423,7 +447,9 @@ def list_jobs():
     """Every job, newest first, as the summary the history page needs."""
     keys = ("id", "status", "created_at", "input_mode", "error", "bounds_epsg4326", "dsm_download")
     out = []
-    for order, job in enumerate(jobs.values()):  # insertion order breaks same-second ties
+    with _JOBS_LOCK:
+        snapshot = list(jobs.values())
+    for order, job in enumerate(snapshot):  # insertion order breaks same-second ties
         m = job.get("metrics") or {}
         v = job.get("validation") or {}
         canopy = (v.get("stats") or {}).get("canopy_top") or {}
