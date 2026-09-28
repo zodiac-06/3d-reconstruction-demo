@@ -30,11 +30,11 @@ geotiff_to_viewer_assets.py. This file is the orchestration glue between
 them, not a reimplementation of any of them.
 
 Terrain DEM choice: the DEM_SOURCE env var sets the server default
-(copernicus | fabdem | srtm; default copernicus), and a `dem_source` form
-field on POST /jobs overrides it per upload. Either way the chosen source is
-tried first, then Copernicus, then SRTM (see 04_fetch_srtm.py's
-terrain_dem_sources) -- FABDEM is only used when asked for, since it's
-CC BY-NC-SA 4.0 (non-commercial).
+(copernicus | srtm | nasadem | fabdem; default copernicus), and a
+`dem_source` form field on POST /jobs overrides it per upload. Either way the
+chosen source is tried first, then Copernicus, then SRTM, then NASADEM (see
+04_fetch_srtm.py's terrain_dem_sources) -- FABDEM is only used when asked
+for, since it's CC BY-NC-SA 4.0 (non-commercial).
 """
 import importlib.util
 import json
@@ -327,7 +327,7 @@ async def create_job(
     east: float | None = Form(None),
     north: float | None = Form(None),
     dem_source: str | None = Form(
-        None, description="Preferred terrain DEM: copernicus (default), fabdem, or srtm"),
+        None, description="Preferred terrain DEM: copernicus (default), srtm, nasadem, or fabdem"),
 ):
     dem_source = dem_source or DEM_SOURCE
     try:

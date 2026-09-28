@@ -65,11 +65,15 @@ Then open `http://localhost:8000/` — pick an input mode, and once processing
 finishes you get links to the 2D context map and the 3D flythrough, both
 pointed at the new result.
 
-Terrain DEM: `DEM_SOURCE=copernicus|fabdem|srtm` (env var, default
+Terrain DEM: `DEM_SOURCE=copernicus|srtm|nasadem|fabdem` (env var, default
 `copernicus`) sets the server default; a `dem_source` form field on
 `POST /jobs` overrides it per upload. The chosen source is tried first, then
-Copernicus, then SRTM. FABDEM is used only when asked for, never as a
-fallback: it is **CC BY-NC-SA 4.0, non-commercial** (see `NOTICE.md`).
+Copernicus, then SRTM, then NASADEM (redundancy only -- a different host).
+NASADEM ranks below raw SRTM because it scores worse against ICESat-2
+canopy top, the DSM target (RMSE: Nainital SRTM 15.2 m vs NASADEM 17.3 m;
+Bangalore 10.1 m vs 12.5 m -- `dsm_calibration/evaluate_dem_sources.py`),
+though better against bare ground. FABDEM is used only when asked for, never
+as a fallback: it is **CC BY-NC-SA 4.0, non-commercial** (see `NOTICE.md`).
 
 ## Pipeline (per upload)
 

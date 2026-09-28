@@ -35,6 +35,7 @@ pipeline_georeferenced/dsm_calibration/mock_data/
 pipeline_georeferenced/dsm_calibration/real_run/
 pipeline_georeferenced/dsm_calibration/real_run_bangalore/
 pipeline_georeferenced/dsm_calibration/real_run_nainital_fusion/
+pipeline_georeferenced/dsm_calibration/real_run_bangalore_dem/
 pipeline_georeferenced/3d_visualization/assets_bangalore/
 
 # Pipeline runtime job data
