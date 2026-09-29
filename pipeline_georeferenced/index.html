@@ -351,6 +351,7 @@
     const q = `?job=${encodeURIComponent(job.id)}`;
     const links =
       `<a class="primary" href="/3d_visualization/index.html">Fly through the 3D terrain <span>→</span></a>` +
+      `<a href="/dashboard.html">Dashboard <span>→</span></a>` +
       `<a href="/leaflet_pitch/index.html">2D context map <span>→</span></a>` +
       `<a href="/dem_court/index.html${q}">DEM Court <span>→</span></a>` +
       (hasVal ? `<a href="/validation/index.html${q}">Lidar check: ${canopy.n} pts, RMSE ${canopy.rmse.toFixed(1)} m <span>→</span></a>` : '') +

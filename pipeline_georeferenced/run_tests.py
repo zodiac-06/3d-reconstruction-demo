@@ -21,6 +21,7 @@ TESTS = [
     "test_jobs_api.py",
     "test_concurrency.py",
     "test_static_files.py",
+    "test_analysis_layers.py",
 ]
 
 

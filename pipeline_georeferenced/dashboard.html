@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DepthWizard — Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #0b0c10; --panel: rgba(255,255,255,0.035); --panel-2: #14161c; --line: rgba(255,255,255,0.1);
+    --text: #e8eaed; --dim: #9aa0a6; --accent: #4fc3f7; --accent-2: #7bd3fa;
+    --ok: #66bb6a; --warn: #fbc02d; --bad: #ef5350;
+    --high: #43a047; --medium: #fbc02d; --low: #e53935;
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 20px 16px 48px; box-sizing: border-box; }
+  a { color: var(--accent); }
+  .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .head h1 { margin: 0; font-size: 22px; }
+  .head .sub { color: var(--dim); font-size: 13px; margin-top: 4px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; font-weight: 600; font-size: 13px;
+         text-decoration: none; border: 1px solid var(--line); background: #1b2227; color: var(--accent); cursor: pointer; }
+  .btn:hover { background: #26323a; }
+  .btn.primary { background: var(--accent); color: var(--bg); border-color: transparent; }
+  .btn.primary:hover { background: var(--accent-2); }
+  .btn[aria-disabled="true"] { opacity: 0.45; pointer-events: none; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; box-sizing: border-box; }
+  .panel h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--dim); display: flex; justify-content: space-between; gap: 8px; }
+  .panel h2 a { text-transform: none; letter-spacing: 0; font-size: 12px; }
+
+  /* KPI row */
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .kpi .v { font-size: 30px; font-weight: 700; line-height: 1.1; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .kpi .v small { font-size: 14px; color: var(--dim); font-weight: 600; margin-left: 2px; }
+  .kpi .k { color: var(--text); font-size: 13px; margin-top: 4px; font-weight: 600; }
+  .kpi .s { color: var(--dim); font-size: 12px; margin-top: 4px; line-height: 1.4; }
+  .kpi .v2 { display: flex; gap: 16px; }
+  .bar3 { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 8px; background: var(--panel-2); }
+  .bar3 i { display: block; height: 100%; }
+
+  /* Main row */
+  .main { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+  .viewer-wrap { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); height: 520px; background: #000; }
+  .viewer-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
+          font-size: 12px; font-weight: 600; cursor: pointer; }
+  .chip:hover { color: var(--text); }
+  .chip.on { background: rgba(79,195,247,0.14); color: var(--accent); border-color: rgba(79,195,247,0.5); }
+  .side { display: grid; grid-template-rows: auto 1fr; gap: 12px; min-width: 0; }
+  #aoi-map { height: 230px; border-radius: 8px; border: 1px solid var(--line); }
+  .facts { font-size: 13px; line-height: 1.6; }
+  .facts .row { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dashed rgba(255,255,255,0.06); padding: 3px 0; }
+  .facts .row span:first-child { color: var(--dim); }
+  .facts .row span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .actions .btn { justify-content: space-between; }
+
+  /* Bottom row */
+  .bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; }
+  .acc-row { margin-bottom: 12px; }
+  .acc-row .name { font-size: 13px; font-weight: 600; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .acc-row .name span { color: var(--dim); font-weight: 500; font-size: 12px; }
+  .hbar { display: grid; grid-template-columns: 92px 1fr 56px; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); margin: 3px 0; }
+  .hbar .track { height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  .hbar .fill { height: 100%; border-radius: 5px; }
+  .hbar b { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+  .note { color: var(--dim); font-size: 12px; line-height: 1.5; }
+  .stages { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 6px 0 10px; background: var(--panel-2); }
+  .stages i { display: block; height: 100%; }
+  .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: var(--dim); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend span i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .legend span b { margin-left: auto; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; padding: 6px 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 6px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+  .st { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .st.done { background: rgba(102,187,106,0.15); color: var(--ok); }
+  .st.failed { background: rgba(239,83,80,0.15); color: var(--bad); }
+  .st.running, .st.queued { background: rgba(79,195,247,0.15); color: var(--accent); }
+  .empty { color: var(--dim); font-size: 13px; }
+  .features { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  .feature { display: block; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); text-decoration: none; color: var(--text); }
+  .feature:hover { border-color: rgba(79,195,247,0.5); }
+  .feature b { display: block; font-size: 13px; margin-bottom: 3px; color: var(--accent); }
+  .feature span { color: var(--dim); font-size: 12px; line-height: 1.4; }
+
+  @media (max-width: 1100px) {
+    .main { grid-template-columns: 1fr; }
+    .bottom { grid-template-columns: 1fr 1fr; }
+    .bottom > :last-child { grid-column: 1 / -1; }
+    .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 700px) {
+    .kpis { grid-template-columns: 1fr 1fr; }
+    .bottom { grid-template-columns: 1fr; }
+    .viewer-wrap { height: 420px; }
+    .actions { grid-template-columns: 1fr; }
+    .kpi .v { font-size: 24px; }
+  }
+  @media (max-width: 420px) { .kpis, .features { grid-template-columns: 1fr; } }
+</style>
+<script src="/site/nav.js" defer></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1 id="title">Dashboard</h1>
+      <div class="sub" id="subtitle">Loading…</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn" href="/history.html">All jobs</a>
+      <a class="btn primary" href="/">+ New job</a>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="panel kpi">
+      <div class="v" id="kpi-acc">—</div>
+      <div class="k">RMSE vs ICESat-2 lidar</div>
+      <div class="s" id="kpi-acc-s">Canopy top · ground. Precomputed offline, not live.</div>
+    </div>
+    <div class="panel kpi">
+      <div class="v" id="kpi-conf">—</div>
+      <div class="k">High DEM agreement</div>
+      <div class="bar3" id="kpi-conf-bar"></div>
+      <div class="s" id="kpi-conf-s">Share of pixels where independent DEMs agree within 5 m.</div>
+    </div>
+    <div class="panel kpi">
+      <div class="v" id="kpi-time">—</div>
+      <div class="k">Latest processing time</div>
+      <div class="s" id="kpi-time-s">Upload to 3D terrain.</div>
+    </div>
+    <div class="panel kpi">
+      <div class="v" id="kpi-jobs">—</div>
+      <div class="k">Jobs processed</div>
+      <div class="s" id="kpi-jobs-s"></div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="panel">
+      <h2><span>3D terrain</span><a id="open-viewer" href="/3d_visualization/index.html">Open full screen →</a></h2>
+      <div class="chips" id="view-chips">
+        <button class="chip on" data-mode="satellite">Satellite</button>
+        <button class="chip" data-mode="elevation">Elevation</button>
+        <button class="chip" data-mode="hillshade">Hillshade</button>
+        <button class="chip" data-mode="slope">Slope</button>
+        <button class="chip" data-mode="confidence">Confidence</button>
+        <button class="chip" data-mode="provenance">Provenance</button>
+        <button class="chip" data-measure="1">Measure</button>
+      </div>
+      <div class="viewer-wrap"><iframe id="viewer" title="3D terrain" src="/3d_visualization/index.html?embed=1"></iframe></div>
+    </div>
+    <div class="side">
+      <div class="panel">
+        <h2><span>Area of interest</span><a href="/leaflet_pitch/index.html">2D map →</a></h2>
+        <div id="aoi-map"></div>
+      </div>
+      <div class="panel">
+        <h2><span>Latest job</span><span id="job-status"></span></h2>
+        <div class="facts" id="job-facts"><div class="empty">No finished job yet.</div></div>
+        <div class="actions" id="job-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div class="panel">
+      <h2><span>Accuracy vs ICESat-2 lidar</span><a id="val-link" href="/validation/index.html">Evidence →</a></h2>
+      <div id="acc-table"><div class="empty">Loading…</div></div>
+      <div class="note">RMSE of the DSM against ICESat-2 ATL08 lidar segments, which are independent of every DEM.
+        Precomputed offline; lower is better. The DEM order Copernicus → SRTM → NASADEM is the one that scored best.</div>
+    </div>
+    <div class="panel">
+      <h2><span>Pipeline, latest job</span></h2>
+      <div class="stages" id="stages"></div>
+      <div class="legend" id="stage-legend"><span class="empty">No finished job yet.</span></div>
+      <h2 style="margin-top:16px"><span>DEM confidence</span><a id="court-link" href="/dem_court/index.html">DEM Court →</a></h2>
+      <div id="conf-detail" class="note">—</div>
+    </div>
+    <div class="panel">
+      <h2><span>Recent jobs</span><a href="/history.html">All →</a></h2>
+      <div id="recent"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+  <div class="features">
+    <a class="feature" href="#" data-open="measure"><b>Measure</b><span>Distance, height difference, grade and elevation profile between two points.</span></a>
+    <a class="feature" href="#" data-open="confidence"><b>Confidence</b><span>Where independent DEMs agree (green) or disagree (red), per pixel.</span></a>
+    <a class="feature" href="#" data-open="provenance"><b>Provenance</b><span>Which DEM every height comes from, and how much the AI detail layer moved it.</span></a>
+    <a class="feature" id="feat-court" href="/dem_court/index.html"><b>DEM Court</b><span>Copernicus, SRTM and NASADEM side by side, in one datum.</span></a>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/validation/headline.js"></script>
+<script>
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const $ = id => document.getElementById(id);
+  const DEM_NAMES = { copernicus: 'Copernicus GLO-30', srtm: 'SRTM', nasadem: 'NASADEM', fabdem: 'FABDEM' };
+  const STAGES = [
+    ['save_upload', 'Upload', '#90a4ae'], ['crop', 'Crop', '#78909c'], ['stac_search', 'Sentinel-2 search', '#8d6e63'],
+    ['stac_download', 'Sentinel-2 download', '#a1887f'], ['metadata', 'Metadata', '#7986cb'], ['dem_fetch', 'DEM fetch', '#4fc3f7'],
+    ['depth_inference', 'Depth Anything', '#ba68c8'], ['fusion', 'Fusion', '#ffb74d'], ['viewer_assets', '3D assets', '#81c784'],
+  ];
+  const CONF_COLORS = { high: 'var(--high)', medium: 'var(--medium)', low: 'var(--low)' };
+  const q = id => `?job=${encodeURIComponent(id)}`;
+  let latest = null, viewerMode = 'satellite';
+
+  function fmtSecs(s) { return s >= 60 ? `${Math.floor(s / 60)}<small>m</small> ${Math.round(s % 60)}<small>s</small>` : `${s.toFixed(1)}<small>s</small>`; }
+
+  // --- 3D viewer: the chips reload the framed viewer in a mode ---
+  function setViewer(mode, measure) {
+    viewerMode = mode || viewerMode;
+    const p = new URLSearchParams({ embed: '1', mode: viewerMode });
+    if (measure) p.set('measure', '1');
+    if (latest) p.set('job', latest.id);
+    $('viewer').src = `/3d_visualization/index.html?${p}`;
+    $('open-viewer').href = `/3d_visualization/index.html?${new URLSearchParams([...p].filter(([k]) => k !== 'embed'))}`;
+    document.querySelectorAll('#view-chips .chip').forEach(c =>
+      c.classList.toggle('on', measure ? c.dataset.measure === '1' : c.dataset.mode === viewerMode));
+  }
+  document.querySelectorAll('#view-chips .chip').forEach(c =>
+    c.addEventListener('click', () => setViewer(c.dataset.mode, c.dataset.measure === '1')));
+  document.querySelectorAll('[data-open]').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    const what = a.dataset.open;
+    setViewer(what === 'measure' ? null : what, what === 'measure');
+    $('viewer').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }));
+
+  // --- AOI map: every job's AOI, the latest highlighted ---
+  let map = null;
+  function drawMap(list) {
+    if (typeof L === 'undefined') return;
+    map = map || L.map('aoi-map', { zoomControl: false, attributionControl: true });
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, attribution: 'Imagery &copy; Esri',
+    }).addTo(map);
+    const seen = new Set(), rects = [];
+    for (const j of list) {
+      const b = j.bounds_epsg4326;
+      if (!b || j.status !== 'done') continue;
+      const key = ['west', 'south', 'east', 'north'].map(k => b[k].toFixed(4)).join();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const isLatest = latest && j.id === latest.id;
+      const r = L.rectangle([[b.south, b.west], [b.north, b.east]], {
+        color: isLatest ? '#4fc3f7' : '#ffffff', weight: isLatest ? 2.5 : 1.2, fillOpacity: isLatest ? 0.12 : 0.04,
+      }).addTo(map).bindTooltip(isLatest ? 'Latest job' : new Date(j.created_at || 0).toLocaleDateString());
+      rects.push([r, isLatest]);
+    }
+    const focus = rects.find(([, l]) => l) || rects[0];
+    if (focus) map.fitBounds(focus[0].getBounds(), { padding: [24, 24] });
+    else map.setView([22.5, 79], 4);
+  }
+
+  // --- Accuracy table: every precomputed AOI, canopy top vs ground ---
+  async function drawAccuracy() {
+    try {
+      const table = await (await fetch('/validation/icesat2_precomputed.json')).json();
+      const max = Math.max(...table.aois.map(a => Math.max(a.rmse_canopy_top_m, a.rmse_ground_m)));
+      const current = latest ? matchPrecomputedAoi(latest.bounds_epsg4326, table) : null;
+      $('acc-table').innerHTML = table.aois.map(a => `
+        <div class="acc-row">
+          <div class="name">${esc(a.name)}${current && current.name === a.name ? ' · this job' : ''}<span>${esc(DEM_NAMES[a.dem_source] || a.dem_source)}</span></div>
+          <div class="hbar">Canopy top<div class="track"><div class="fill" style="width:${100 * a.rmse_canopy_top_m / max}%;background:var(--accent)"></div></div><b>${a.rmse_canopy_top_m} m</b></div>
+          <div class="hbar">Bare ground<div class="track"><div class="fill" style="width:${100 * a.rmse_ground_m / max}%;background:#81c784"></div></div><b>${a.rmse_ground_m} m</b></div>
+        </div>`).join('');
+      if (current) {
+        $('kpi-acc').innerHTML = `${current.rmse_canopy_top_m}<small>m</small> · ${current.rmse_ground_m}<small>m</small>`;
+        $('kpi-acc-s').textContent = `${current.name}: canopy top · ground. Precomputed offline, not live.`;
+      } else {
+        const best = table.aois.reduce((a, b) => (a.rmse_canopy_top_m < b.rmse_canopy_top_m ? a : b));
+        $('kpi-acc').innerHTML = `${best.rmse_canopy_top_m}<small>m</small>`;
+        $('kpi-acc-s').textContent = latest ? `No lidar result for this AOI; best precomputed: ${best.name} (canopy top).`
+          : `${best.name}, canopy top. Precomputed offline, not live.`;
+      }
+    } catch (err) {
+      $('acc-table').innerHTML = `<div class="empty">Precomputed table unavailable (${esc(err.message)}).</div>`;
+    }
+  }
+
+  // --- Confidence: cached DEM Court result for the latest job, or a button to compute it ---
+  async function drawConfidence(compute = false) {
+    if (!latest) { $('conf-detail').textContent = 'Process an AOI first.'; return; }
+    if (compute) $('conf-detail').textContent = 'Fetching every DEM source and comparing… this can take a minute.';
+    const res = await fetch(`/jobs/${encodeURIComponent(latest.id)}/confidence${compute ? '?compute=true' : ''}`);
+    const c = await res.json();
+    if (!res.ok) {
+      const notYet = res.status === 409 && /not computed/i.test(c.detail || '');
+      $('kpi-conf').innerHTML = '—';
+      $('kpi-conf-s').textContent = notYet ? 'Not computed yet for this AOI.' : `Unavailable: ${c.detail || res.statusText}`;
+      $('conf-detail').innerHTML = notYet
+        ? `Confidence compares the DEMs for this AOI, which needs SRTM and NASADEM fetched too. ` +
+          `<br><button class="btn" id="conf-go" style="margin-top:8px">Compute confidence (~1 min)</button>`
+        : esc(c.detail || res.statusText);
+      const go = $('conf-go');
+      if (go) go.onclick = () => drawConfidence(true);
+      return;
+    }
+    const cls = Object.fromEntries(c.classes.map(k => [k.name, k]));
+    $('kpi-conf').innerHTML = `${(100 * cls.high.fraction).toFixed(0)}<small>%</small>`;
+    $('kpi-conf-bar').innerHTML = c.classes.map(k => `<i style="width:${100 * k.fraction}%;background:${CONF_COLORS[k.name]}"></i>`).join('');
+    $('kpi-conf-s').textContent = `${c.sources.map(s => DEM_NAMES[s] || s).join(' vs ')}: agree within 5 m.`;
+    $('conf-detail').innerHTML =
+      `<div class="legend">${c.classes.map(k => `<span><i style="background:${CONF_COLORS[k.name]}"></i>${k.name} ` +
+        `(${k.max_m === null ? `> ${k.min_m}` : `${k.min_m ? `${k.min_m}–` : '≤ '}${k.max_m}`} m)<b>${(100 * k.fraction).toFixed(0)}%</b></span>`).join('')}` +
+      `<span>mean spread<b>${c.spread.mean.toFixed(1)} m</b></span></div>` +
+      `<div style="margin-top:8px">Spread (max − min) between ${c.sources.map(s => DEM_NAMES[s] || s).join(', ')} in one datum (EGM2008). ` +
+      `Agreement, not an error bar. <a href="${c.geotiff_url}">Download confidence GeoTIFF ↓</a></div>`;
+    const dl = $('dl-conf');
+    if (dl) { dl.href = c.geotiff_url; dl.removeAttribute('aria-disabled'); }
+  }
+
+  function drawJob(job) {
+    const m = job.metrics || {}, src = job.input || {}, t = job.timings_s || {};
+    $('job-status').innerHTML = `<span class="st ${esc(job.status)}">${esc(job.status)}</span>`;
+    const b = job.bounds_epsg4326;
+    const rows = [
+      ['When', job.created_at ? new Date(job.created_at).toLocaleString() : '—'],
+      ['Input', job.input_mode === 'fetch_by_bounds' ? `Sentinel-2 ${esc((src.scene_datetime || '').slice(0, 10))}` : esc(src.filename || job.input_mode || '—')],
+      ['Centre', b ? `${((b.south + b.north) / 2).toFixed(4)}°N, ${((b.west + b.east) / 2).toFixed(4)}°E` : '—'],
+      ['Terrain DEM', m.dem_source ? `${esc(DEM_NAMES[m.dem_source] || m.dem_source)} (${esc(m.vertical_datum)})` +
+        (m.dem_requested && m.dem_requested !== m.dem_source ? ` · fell back from ${esc(m.dem_requested)}` : '') : '—'],
+      ['AI detail layer', Number.isFinite(m.detail_std_m) ? `Depth Anything V2, std ${m.detail_std_m.toFixed(2)} m` : '—'],
+    ];
+    const v = job.validation || {};
+    if (v.available && v.stats && v.stats.canopy_top && Number.isFinite(v.stats.canopy_top.rmse)) {
+      rows.push(['Live lidar check', `${v.stats.canopy_top.n} pts, RMSE ${v.stats.canopy_top.rmse.toFixed(1)} m`]);
+    }
+    $('job-facts').innerHTML = rows.map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join('');
+    const hasVal = v.available;
+    $('job-actions').innerHTML =
+      `<a class="btn" href="${esc(job.dsm_download || '#')}" ${job.dsm_download ? '' : 'aria-disabled="true"'}>DSM GeoTIFF <span>↓</span></a>` +
+      `<a class="btn" id="dl-conf" href="#" aria-disabled="true">Confidence GeoTIFF <span>↓</span></a>` +
+      `<a class="btn" href="/dem_court/index.html${q(job.id)}">DEM Court <span>→</span></a>` +
+      `<a class="btn" href="/validation/index.html${q(job.id)}" ${hasVal ? '' : 'aria-disabled="true" title="No ICESat-2 truth for this AOI"'}>Lidar evidence <span>→</span></a>`;
+    $('court-link').href = $('feat-court').href = `/dem_court/index.html${q(job.id)}`;
+    $('val-link').href = `/validation/index.html${q(job.id)}`;
+
+    // Stage timings
+    const parts = STAGES.filter(([k]) => Number.isFinite(t[k]) && t[k] > 0);
+    const total = parts.reduce((s, [k]) => s + t[k], 0);
+    $('stages').innerHTML = parts.map(([k, , c]) => `<i style="width:${100 * t[k] / total}%;background:${c}" title="${k}"></i>`).join('');
+    $('stage-legend').innerHTML = parts.map(([k, label, c]) => `<span><i style="background:${c}"></i>${label}<b>${t[k].toFixed(1)} s</b></span>`).join('');
+    if (Number.isFinite(t.total)) {
+      $('kpi-time').innerHTML = fmtSecs(t.total);
+      const slow = parts.slice().sort((a, b) => t[b[0]] - t[a[0]])[0];
+      $('kpi-time-s').textContent = slow ? `Longest stage: ${slow[1]} (${t[slow[0]].toFixed(1)} s).` : 'Upload to 3D terrain.';
+    }
+  }
+
+  function drawRecent(list) {
+    if (!list.length) { $('recent').innerHTML = '<div class="empty">No jobs yet. <a href="/">Start one →</a></div>'; return; }
+    $('recent').innerHTML = `<table><thead><tr><th>When</th><th>Status</th><th>DEM</th><th>Lidar RMSE</th><th></th></tr></thead><tbody>` +
+      list.slice(0, 6).map(j => `<tr>
+        <td>${j.created_at ? new Date(j.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+        <td><span class="st ${esc(j.status)}">${esc(j.status)}</span></td>
+        <td>${esc(DEM_NAMES[j.dem_source] || j.dem_source || '—')}</td>
+        <td>${Number.isFinite(j.validation_rmse_canopy_top_m) ? `${j.validation_rmse_canopy_top_m.toFixed(1)} m` : '—'}</td>
+        <td>${j.status === 'done' ? `<a href="/dem_court/index.html${q(j.id)}">Court</a>` : esc((j.error || '').slice(0, 40))}</td>
+      </tr>`).join('') + '</tbody></table>';
+    const done = list.filter(j => j.status === 'done').length, failed = list.filter(j => j.status === 'failed').length;
+    const aois = new Set(list.filter(j => j.bounds_epsg4326).map(j => ['west', 'south', 'east', 'north']
+      .map(k => j.bounds_epsg4326[k].toFixed(3)).join())).size;
+    $('kpi-jobs').textContent = done;
+    $('kpi-jobs-s').textContent = `${aois} area${aois === 1 ? '' : 's'} of interest · ${failed} failed · ${list.length} total`;
+  }
+
+  async function load() {
+    let list = [];
+    try { list = await (await fetch('/jobs')).json(); } catch (err) { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const done = list.find(j => j.status === 'done');
+    if (done) {
+      try { latest = await (await fetch(`/jobs/${encodeURIComponent(done.id)}`)).json(); } catch (err) { latest = null; }
+    }
+    if (latest) {
+      const b = latest.bounds_epsg4326;
+      let name = null;
+      try { name = (matchPrecomputedAoi(b, await (await fetch('/validation/icesat2_precomputed.json')).json()) || {}).name; } catch (err) { /* unnamed AOI */ }
+      $('title').textContent = name ? `${name} · Dashboard` : 'Dashboard';
+      $('subtitle').textContent = `Latest AOI: ${((b.south + b.north) / 2).toFixed(3)}°N, ${((b.west + b.east) / 2).toFixed(3)}°E · ` +
+        `${(b.east - b.west).toFixed(3)}° × ${(b.north - b.south).toFixed(3)}°`;
+      drawJob(latest);
+      setViewer('satellite');
+    } else {
+      $('subtitle').textContent = 'No finished job yet: the 3D view shows the terrain currently loaded in the viewer.';
+    }
+    drawRecent(list);
+    drawMap(list);
+    drawAccuracy();
+    drawConfidence().catch(err => { $('conf-detail').textContent = `Unavailable: ${err.message}`; });
+  }
+  load();
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@
 (function () {
   const NAV_H = 48;
   const LINKS = [
+    { key: 'dashboard', label: 'Dashboard', href: '/dashboard.html', match: p => p.startsWith('/dashboard') },
     { key: 'home', label: 'New job', href: '/', match: p => p === '/' || p === '/index.html' },
     { key: 'history', label: 'History', href: '/history.html', match: p => p.startsWith('/history') },
     { key: 'map', label: '2D map', href: '/leaflet_pitch/index.html', match: p => p.startsWith('/leaflet_pitch') },
@@ -41,6 +42,8 @@
     <path d="M2 19 L8 9 L12 14 L16 6 L22 19" fill="none" stroke="#e8eaed" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
 
   function build() {
+    // ?embed=1: the page is framed inside the dashboard, which has its own bar.
+    if (new URLSearchParams(location.search).get('embed') === '1') return;
     const style = document.createElement('style');
     style.textContent = css;
     document.head.appendChild(style);
@@ -49,7 +52,7 @@
     const jobHere = new URLSearchParams(location.search).get('job');
     const nav = document.createElement('nav');
     nav.id = 'dw-nav';
-    nav.innerHTML = `<a class="brand" href="/">${logo}<span>DepthWizard</span><small>SIH · Team StarOps</small></a>` +
+    nav.innerHTML = `<a class="brand" href="/dashboard.html">${logo}<span>DepthWizard</span><small>SIH · Team StarOps</small></a>` +
       `<div class="dw-links">${LINKS.map(l =>
         `<a data-key="${l.key}" href="${l.href}${l.job && jobHere ? `?job=${encodeURIComponent(jobHere)}` : ''}"` +
         `${l.match(path) ? ' class="active"' : ''}>${l.label}</a>`).join('')}</div>`;

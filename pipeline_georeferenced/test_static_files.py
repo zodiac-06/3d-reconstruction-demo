@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 SERVED = [
-    "/", "/index.html", "/history.html",
+    "/", "/index.html", "/history.html", "/dashboard.html", "/3d_visualization/layers.js",
     "/3d_visualization/", "/3d_visualization/index.html", "/3d_visualization/terrain.js",
     "/3d_visualization/controls.js", "/3d_visualization/elevation_probe.js", "/3d_visualization/render_modes.js",
     "/3d_visualization/assets/elevation_16bit.png", "/3d_visualization/assets/satellite.jpg",
