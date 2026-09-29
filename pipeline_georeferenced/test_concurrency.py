@@ -8,7 +8,10 @@ starts and ends. Two uploads are sent 0.3 s apart; while the first runs,
 a page and GET /jobs are timed and the job statuses read. Then the same
 with POST /jobs?wait=false: the response must come back at once, the
 upload's bytes must reach the pipeline after the request has closed, and
-polling GET /jobs/{id} must end at "done".
+polling GET /jobs/{id} must end at "done". Meanwhile a watcher polls the
+job and re-reads the job store as fast as it can: no response may say
+"done" without the job's download link and timings, and every read of the
+store must be complete JSON.
 
     python test_concurrency.py
 """
@@ -125,11 +128,33 @@ def main():
         job = r.json()
         check(r.status_code == 200 and post_s < 0.5 and job["status"] in ("queued", "running"),
               f"wait=false answered in {post_s * 1000:.0f} ms with status '{job['status']}'")
+        watch = {"gets": 0, "early_done": 0, "store_reads": 0, "store_bad": 0}
+
+        def watcher(job_id):
+            with httpx.Client() as c:
+                while True:
+                    j = c.get(base + f"/jobs/{job_id}").json()
+                    watch["gets"] += 1
+                    if j["status"] == "done" and not (j.get("dsm_download") and "timings_s" in j):
+                        watch["early_done"] += 1
+                    try:
+                        json.loads(app_main.JOBS_STORE_PATH.read_text())
+                        watch["store_reads"] += 1
+                    except (ValueError, FileNotFoundError):
+                        watch["store_bad"] += 1
+                    if j["status"] in ("done", "failed"):
+                        return
+
+        w = threading.Thread(target=watcher, args=(job["id"],)); w.start()
         polls = 0
         while job["status"] in ("queued", "running") and polls < 100:
             time.sleep(0.2); polls += 1
             job = httpx.get(base + f"/jobs/{job['id']}").json()
         check(job["status"] == "done" and job["dsm_download"], f"polled to done after {polls} polls")
+        w.join()
+        check(watch["early_done"] == 0 and watch["store_bad"] == 0 and watch["gets"] > 20,
+              f"watcher: {watch['gets']} polls, {watch['early_done']} said done before the job's record was complete; "
+              f"{watch['store_reads']} store reads, {watch['store_bad']} incomplete")
         check(received == [payload], f"pipeline got the upload's {len(payload):,} bytes after the request closed")
         check(not (tmp / "jobs" / f"{job['id']}_upload.tif").exists(), "background upload copy removed")
         r = httpx.post(base + "/jobs?wait=false", data={"west": 79.42, "south": 29.35, "east": 79.51, "north": 29.42})

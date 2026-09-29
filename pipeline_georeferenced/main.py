@@ -159,9 +159,13 @@ _JOBS_LOCK = threading.RLock()
 
 
 def _save_jobs():
+    # Write-then-rename, so a reader (or a restart after a crash mid-write)
+    # never sees a truncated store.
     with _JOBS_LOCK:
-        with open(JOBS_STORE_PATH, "w") as f:
+        tmp = JOBS_STORE_PATH.with_name(JOBS_STORE_PATH.name + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(jobs, f, indent=2)
+        os.replace(tmp, JOBS_STORE_PATH)
 
 
 jobs = _load_jobs()
@@ -413,23 +417,34 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
         _save_jobs()
     timings = {}
     started = time.perf_counter()
+    result = error = None
     try:
         jobs[job_id]["input"] = _prepare_cropped_input(mode, geotiff, bounds, timings)
-        jobs[job_id].update(status="done", **_run_pipeline(dem_source, sources, timings))
+        result = _run_pipeline(dem_source, sources, timings)
     except Exception as exc:
         _tick(timings, None)
-        jobs[job_id].update(status="failed", error=str(exc))
+        error = str(exc)
     try:
-        if jobs[job_id]["status"] == "done":
+        if result is not None:
+            # Still "running" to anyone polling until everything below is
+            # recorded: a client that sees "done" gets the download link,
+            # validation and timings with it.
+            jobs[job_id].update(**result)
             jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
             _keep_job_dsm(job_id)
             _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
     finally:
-        # Whatever went wrong above, the job's record reaches the store.
-        timings["total"] = round(time.perf_counter() - started, 2)
-        timings["queued"] = queued_s
-        jobs[job_id]["timings_s"] = timings
-        _save_jobs()
+        # Whatever went wrong above, the final state and the store change
+        # together (GET /jobs/{id} reads under the same lock).
+        with _JOBS_LOCK:
+            timings["total"] = round(time.perf_counter() - started, 2)
+            timings["queued"] = queued_s
+            jobs[job_id]["timings_s"] = timings
+            if result is not None:
+                jobs[job_id]["status"] = "done"
+            else:
+                jobs[job_id].update(status="failed", error=error)
+            _save_jobs()
     return jobs[job_id]
 
 
@@ -547,9 +562,10 @@ def download_dsm(job_id: str):
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return jobs[job_id]
+    with _JOBS_LOCK:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return dict(jobs[job_id])
 
 
 @app.get("/jobs/{job_id}/validation")

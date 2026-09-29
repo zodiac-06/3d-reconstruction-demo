@@ -10,3 +10,4 @@ dsm_calibration/mock_data/
 dsm_calibration/real_run/
 jobs_meta/
 jobs_meta_store.json
+*_store.json.tmp
