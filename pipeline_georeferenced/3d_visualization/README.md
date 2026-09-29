@@ -11,6 +11,8 @@ A standalone Three.js viewer that drapes a satellite orthophoto over a displaced
 | File | Purpose |
 |---|---|
 | `terrain.js` | `createTerrainMesh(demUrl, metaUrl, satUrl, options)` — fetches metadata, loads both textures, builds a UV-mapped `PlaneGeometry` displaced by the DEM, returns `{mesh, setVerticalExaggeration, dispose}` |
+| `elevation_probe.js` | Click probe: decodes the 16-bit PNG itself (canvas would flatten it to 8-bit), elevation from it + metadata min/max, slope over ±30 m from true pixel size, UTM → lat/lon, ray vs. heightfield intersection (Three.js raycasts ignore `displacementMap`). Checked by `dsm_calibration/test_viewer_probe.py` |
+| `render_modes.js` | Render modes (design doc §4.4): elevation heatmap, hillshade (sun 315°/45°) and slope map computed in the browser from the same 16-bit DSM and ±30 m gradients as the probe, blended over the satellite image at a chosen opacity. Checked by `dsm_calibration/test_render_modes.py` |
 | `controls.js` | `setupNavigation(camera, domElement)` — wires `OrbitControls` + `FlyControls` on one camera, toggles between them without losing where the camera is pointed |
 | `index.html` | Full viewer: lighting, UI panel (mode toggle, exaggeration slider, nav hints), resize handling, error banner |
 | `assets/` | **Placeholder/demo data** — a gradient test image, not real satellite/elevation data |
@@ -20,7 +22,11 @@ A standalone Three.js viewer that drapes a satellite orthophoto over a displaced
 ```
 assets/elevation_16bit.png   — grayscale heightmap, same pixel dimensions as the satellite image
 assets/satellite.jpg          — the orthophoto to drape on top
-assets/metadata.json          — { "minElevation": <number>, "maxElevation": <number>, "units": "meters" }
+assets/metadata.json          — { "minElevation": <number>, "maxElevation": <number>, "units": "meters",
+                                  "crs": "EPSG:326xx", "boundsNative": {left,bottom,right,top},
+                                  "boundsEPSG4326": {west,south,east,north} }
+                                (crs/bounds feed the click probe's lat/lon and pixel size; without
+                                 them the probe still shows elevation but not lat/lon or slope)
 ```
 
 ## Verified working

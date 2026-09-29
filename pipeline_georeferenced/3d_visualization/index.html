@@ -105,6 +105,47 @@
     width: 100%;
     accent-color: var(--accent);
   }
+  .mode-row { margin-top: 16px; }
+  .mode-row label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  #mode-select {
+    width: 100%;
+    padding: 7px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+    font-size: 13px;
+  }
+  #mode-select option { background: #15171c; }
+  #opacity-slider { width: 100%; accent-color: var(--accent); }
+  #mode-legend { margin-top: 10px; font-size: 11px; color: var(--text-dim); display: none; }
+  #mode-legend .ramp { height: 8px; border-radius: 4px; margin-bottom: 4px; }
+  #mode-legend .ends { display: flex; justify-content: space-between; color: var(--text); }
+  #probe-panel {
+    bottom: 16px;
+    right: 16px;
+    width: 250px;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  #probe-panel .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  #probe-panel .row span:last-child {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  #probe-panel .dim,
+  #probe-panel .row span:first-child {
+    color: var(--text-dim);
+  }
+  #probe-panel .note {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -120,12 +161,47 @@
     </label>
     <input id="exaggeration-slider" type="range" min="0.5" max="4.0" step="0.1" value="1.5" />
   </div>
+  <div class="mode-row">
+    <label for="mode-select">Render mode</label>
+    <select id="mode-select">
+      <option value="satellite">Satellite texture</option>
+      <option value="elevation">Elevation heatmap</option>
+      <option value="hillshade">Hillshade</option>
+      <option value="slope">Slope map (30 m-scale)</option>
+    </select>
+  </div>
+  <div class="slider-row" id="opacity-row" style="display:none">
+    <label for="opacity-slider">
+      <span>Overlay opacity</span>
+      <output id="opacity-value">70%</output>
+    </label>
+    <input id="opacity-slider" type="range" min="0" max="100" step="5" value="70" />
+  </div>
+  <div id="mode-legend">
+    <div class="ramp" id="legend-ramp"></div>
+    <div class="ends"><span id="legend-lo"></span><span id="legend-hi"></span></div>
+    <div id="legend-note"></div>
+  </div>
 </div>
 
 <div id="hint-panel" class="panel">
   <h2>Controls</h2>
   <div><strong>Orbit:</strong> Left-drag to rotate, scroll to zoom, right-drag to pan.</div>
   <div style="margin-top:6px;"><strong>Fly:</strong> WASD to move, drag mouse to look, Q/E to roll.</div>
+  <div style="margin-top:6px;"><strong>Probe:</strong> click the terrain for lat/lon, elevation and slope.</div>
+</div>
+
+<div id="probe-panel" class="panel">
+  <h2>Point probe</h2>
+  <div id="probe-empty" class="dim">Click the terrain.</div>
+  <div id="probe-values" style="display:none">
+    <div class="row"><span>Lat, Lon</span><span id="probe-latlon"></span></div>
+    <div class="row"><span>Elevation</span><span id="probe-elev"></span></div>
+    <div class="row"><span>Slope (30 m-scale)</span><span id="probe-slope"></span></div>
+    <div class="row"><span>Pixel (col, row)</span><span id="probe-pixel"></span></div>
+    <div class="note">Elevation is read from the 16-bit DSM, not the mesh, so it doesn't change with
+      vertical exaggeration. Slope is a central difference over &plusmn;30 m, the terrain DEM's posting.</div>
+  </div>
 </div>
 
 <div id="status-panel" class="panel"></div>
@@ -143,6 +219,8 @@
   import * as THREE from 'three';
   import { createTerrainMesh } from './terrain.js';
   import { setupNavigation } from './controls.js';
+  import { decodeGray16Png, createElevationProbe, intersectHeightfield } from './elevation_probe.js';
+  import { computeGradients, renderMode, RAMPS, SLOPE_MAX_DEG, SUN_AZIMUTH_DEG, SUN_ALTITUDE_DEG } from './render_modes.js';
 
   const canvas = document.getElementById('app-canvas');
   const modeToggle = document.getElementById('mode-toggle');
@@ -208,12 +286,162 @@
   });
 
   let terrain = null;
+  let probe = null;
+  let probedPixel = null;
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(1.2, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xff4081 })
+  );
+  marker.visible = false;
+  scene.add(marker);
+
+  // The marker sits on the displaced surface, so it follows the slider; the
+  // readout doesn't (it's keyed to the pixel, not the mesh height).
+  function placeMarker() {
+    if (!probedPixel || !terrain) return;
+    const { col, row } = probedPixel;
+    marker.position.set(
+      ((col + 0.5) / probe.width - 0.5) * terrain.planeWidth,
+      terrain.getDisplacementScale() * probe.normalizedAt(col, row),
+      ((row + 0.5) / probe.height - 0.5) * terrain.planeHeight
+    );
+    marker.visible = true;
+  }
+
+  function showProbe(p) {
+    probedPixel = p;
+    document.getElementById('probe-empty').style.display = 'none';
+    document.getElementById('probe-values').style.display = 'block';
+    document.getElementById('probe-latlon').textContent =
+      p.lat === null ? 'n/a (no georeference)' : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
+    document.getElementById('probe-elev').textContent = `${p.elevationM.toFixed(1)} m`;
+    document.getElementById('probe-slope').textContent =
+      p.slopeDeg === null ? 'n/a (no pixel size)' : `${p.slopeDeg.toFixed(1)}°`;
+    document.getElementById('probe-pixel').textContent = `${p.col}, ${p.row}`;
+    placeMarker();
+  }
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+
+  function probeAtClient(clientX, clientY) {
+    if (!terrain || !probe) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    const inv = terrain.mesh.matrixWorld.clone().invert();
+    const origin = raycaster.ray.origin.clone().applyMatrix4(inv);
+    const dir = raycaster.ray.direction.clone().transformDirection(inv);
+    const hit = intersectHeightfield(probe, origin, dir,
+      terrain.planeWidth, terrain.planeHeight, terrain.getDisplacementScale());
+    return hit ? probe.probePixel(hit.col, hit.row) : null;
+  }
+
+  // Left-drag rotates the view, so only a press-and-release that barely moved counts as a click.
+  let downAt = null;
+  renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', e => {
+    if (!downAt || e.button !== 0) return;
+    const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+    downAt = null;
+    if (moved > 4) return;
+    const p = probeAtClient(e.clientX, e.clientY);
+    if (p) showProbe(p);
+  });
 
   exaggerationSlider.addEventListener('input', () => {
     const factor = parseFloat(exaggerationSlider.value);
     exaggerationValue.textContent = `${factor.toFixed(1)}x`;
     if (terrain) terrain.setVerticalExaggeration(factor);
+    placeMarker();
   });
+
+  // ----- Render modes: an overlay computed from the 16-bit DSM, blended
+  // over the satellite image at the chosen opacity -----
+  const modeSelect = document.getElementById('mode-select');
+  const opacitySlider = document.getElementById('opacity-slider');
+  let gradients = null, modeTexture = null, modeCanvas = null;
+  const overlays = {};
+
+  function showLegend(mode) {
+    const legend = document.getElementById('mode-legend');
+    legend.style.display = mode === 'satellite' ? 'none' : 'block';
+    const ramp = mode === 'hillshade' ? ['#000000', '#ffffff'] : RAMPS[mode];
+    if (!ramp) return;
+    document.getElementById('legend-ramp').style.background = `linear-gradient(90deg, ${ramp.join(', ')})`;
+    const m = terrain.metadata;
+    const [lo, hi, note] = {
+      elevation: [`${m.minElevation.toFixed(0)} m`, `${m.maxElevation.toFixed(0)} m`, 'From the 16-bit DSM.'],
+      slope: ['0°', `≥ ${SLOPE_MAX_DEG}°`, 'Central difference over ±30 m (DEM posting).'],
+      hillshade: ['shadow', 'lit', `Sun from ${SUN_AZIMUTH_DEG}° (NW), ${SUN_ALTITUDE_DEG}° up; true-scale relief.`],
+    }[mode];
+    document.getElementById('legend-lo').textContent = lo;
+    document.getElementById('legend-hi').textContent = hi;
+    document.getElementById('legend-note').textContent = note;
+  }
+
+  function applyMode() {
+    if (!terrain || !probe) return;
+    const mode = modeSelect.value;
+    document.getElementById('opacity-row').style.display = mode === 'satellite' ? 'none' : 'block';
+    if (mode === 'satellite') {
+      terrain.setMap(terrain.satelliteTexture);
+      showLegend(mode);
+      return;
+    }
+    if (mode !== 'elevation' && !gradients) gradients = computeGradients(probe);
+    if (!(mode in overlays)) overlays[mode] = renderMode(mode, probe, gradients);
+    const pixels = overlays[mode];
+    if (!pixels) {
+      showError('This mode needs the DSM\'s pixel size, which metadata.json does not give (no crs/bounds).');
+      return;
+    }
+    const { width: W, height: H } = probe;
+    const overlay = document.createElement('canvas');
+    overlay.width = W; overlay.height = H;
+    overlay.getContext('2d').putImageData(new ImageData(pixels, W, H), 0, 0);
+    modeCanvas = modeCanvas || document.createElement('canvas');
+    modeCanvas.width = W; modeCanvas.height = H;
+    const ctx = modeCanvas.getContext('2d');
+    ctx.globalAlpha = 1;
+    ctx.drawImage(terrain.satelliteTexture.image, 0, 0, W, H);
+    ctx.globalAlpha = parseFloat(opacitySlider.value) / 100;
+    ctx.drawImage(overlay, 0, 0);
+    if (modeTexture) modeTexture.dispose();
+    modeTexture = new THREE.CanvasTexture(modeCanvas);
+    modeTexture.colorSpace = THREE.SRGBColorSpace;
+    modeTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    terrain.setMap(modeTexture);
+    showLegend(mode);
+  }
+
+  modeSelect.addEventListener('change', applyMode);
+  opacitySlider.addEventListener('input', () => {
+    document.getElementById('opacity-value').textContent = `${opacitySlider.value}%`;
+    applyMode();
+  });
+
+  // Handle for scripted checks (dsm_calibration/test_viewer_probe.py): where
+  // a DSM pixel sits on screen at the current exaggeration.
+  window.viewerProbe = {
+    camera,
+    screenPointForPixel(col, row) {
+      const v = new THREE.Vector3(
+        ((col + 0.5) / probe.width - 0.5) * terrain.planeWidth,
+        terrain.getDisplacementScale() * probe.normalizedAt(col, row),
+        ((row + 0.5) / probe.height - 0.5) * terrain.planeHeight
+      ).applyMatrix4(terrain.mesh.matrixWorld).project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      return { x: rect.left + (v.x + 1) / 2 * rect.width, y: rect.top + (1 - v.y) / 2 * rect.height };
+    },
+    isReady: () => Boolean(terrain && probe),
+    // the composited texture currently draped (null in satellite mode)
+    modePixel(col, row) {
+      if (modeSelect.value === 'satellite' || !modeCanvas) return null;
+      return Array.from(modeCanvas.getContext('2d').getImageData(col, row, 1, 1).data);
+    },
+  };
 
   // ?assets=assets_bangalore switches the whole viewer to a different
   // pre-generated assets folder (see dsm_calibration/geotiff_to_viewer_assets.py's
@@ -237,6 +465,10 @@
         }
       );
       scene.add(terrain.mesh);
+
+      const pngResponse = await fetch(`./${assetsDir}/elevation_16bit.png`);
+      if (!pngResponse.ok) throw new Error(`elevation_16bit.png: ${pngResponse.status}`);
+      probe = createElevationProbe(await decodeGray16Png(await pngResponse.arrayBuffer()), terrain.metadata);
     } catch (err) {
       console.error(err);
       showError(`Failed to load terrain assets: ${err.message}`);

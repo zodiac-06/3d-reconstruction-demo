@@ -233,3 +233,67 @@ pip install -r requirements.txt -r requirements-eval.txt
 python dsm_calibration/fetch_icesat2_truth.py <run>/aoi_cropped.tif <run>/icesat2_atl08_truth.csv
 cd dsm_calibration && python evaluate_fusion.py real_run_nainital_fusion
 ```
+
+## Validation evidence panel
+
+When a job's grid matches an evaluation run that has ICESat-2 truth (any
+`dsm_calibration/<run>/` holding `aoi_cropped.tif` +
+`icesat2_atl08_truth.csv`, the same lookup DEM Court uses), the job's DSM is
+scored against every lidar point when the job finishes
+(`validation/evidence.py`). The job keeps the summary; the per-point file
+goes to `jobs_meta/<id>_validation.json` and is served at
+`GET /jobs/{id}/validation`. The upload page then links to
+`validation/index.html?job=<id>`: RMSE / MAE / bias / NMAD / r vs canopy top
+or ground, a map of per-point error, DSM-vs-lidar scatter, error histogram,
+the largest errors, and a CSV of every point. Heights are compared in the
+job DEM's own datum (the truth CSV carries EGM96 and EGM2008).
+
+No truth for the grid means no link and a 409 from the endpoint, never a
+number from a different AOI. To get truth for a new AOI, run
+`fetch_icesat2_truth.py` on its crop into a run directory (needs network
+access to slideruleearth.io and cdn.proj.org).
+
+`python validation/test_evidence.py` checks the scoring against a synthetic
+plane DSM whose correct values are known in closed form.
+
+## Job history and DSM downloads
+
+Every finished job keeps its own copy of the DSM (`jobs_meta/<id>_dsm.tif`;
+the pipeline itself overwrites `output_dsm.tif` each run), tagged
+`UNITS=metre`, `VERTICAL_DATUM`, `DEM_SOURCE` and `METHOD`, so a downloaded
+file says what its heights are. It's served at `GET /jobs/{id}/dsm.tif` and
+linked from the upload page. `GET /jobs` lists every job, newest first, and
+`history.html` shows them with their DSM, DEM Court and validation links.
+The 3D viewer and 2D map show only the latest job's output, so history links
+them for that job only. `python test_jobs_api.py` drives `POST /jobs` with the
+heavy stages stubbed and checks the stored DSM, its tags, the list and the
+downloads.
+
+## What the server publishes
+
+The whole folder is mounted as one static root, so the pages' relative paths
+keep working, but `main.PublicStaticFiles` serves only what the pages load:
+`index.html`, `history.html`, the 3D viewer and its assets, the 2D map, DEM
+Court's page and `.f32` grids, the validation page and its two data files,
+and `qgis_prep/data/geo_metadata.json`. Source, the job store, uploaded or
+fetched GeoTIFFs, kept DSMs (downloaded through `/jobs/{id}/dsm.tif`
+instead), lidar truth and model weights return 404. A new page, or a new
+file an existing page loads, has to be added to `PUBLIC_FILES` /
+`PUBLIC_TREES` in `main.py`; `python test_static_files.py` checks both lists.
+
+## Long jobs behind a proxy
+
+`POST /jobs` waits for the job by default. `POST /jobs?wait=false` answers at
+once with the queued job, runs it in the background, and the client polls
+`GET /jobs/{id}` until `status` is `done` or `failed`; the upload page does
+this, because proxies such as the Cloudflare tunnel cut requests after about
+100 s (error 524). Jobs run one at a time (they share the pipeline's input
+and output paths); others wait as `queued`, and the server keeps answering
+other requests meanwhile. `python test_concurrency.py` checks both modes on a
+real uvicorn server with a stub pipeline.
+
+## Tests
+
+`python run_tests.py` runs every test script here (about 20 s, no model
+weights or network; needs httpx, uvicorn and node >= 18). Each script also
+runs on its own and says in its docstring what it checks and against what.

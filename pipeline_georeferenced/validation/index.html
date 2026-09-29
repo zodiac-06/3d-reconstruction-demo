@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vision2Scale — Validation Evidence</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0c10;
+    --surface: #1a1a19;
+    --border: rgba(255,255,255,0.1);
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #9aa0a6;
+    --accent: #4fc3f7;
+    --below: #3987e5;   /* DSM below lidar (diverging, cool pole) */
+    --mid: #383835;     /* no error (diverging neutral) */
+    --above: #e66767;   /* DSM above lidar (diverging, warm pole) */
+    --bar: #3987e5;
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; line-height: 1.5; }
+  .sub a { color: var(--accent); }
+  .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
+  .controls button { background: #263238; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .controls button.active { background: var(--accent); color: #0b0c10; font-weight: 700; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .l { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
+  .panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--text-2); font-weight: 600; }
+  #map { height: 420px; border-radius: 6px; }
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
+  .ramp { flex: 0 0 180px; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--below), var(--mid), var(--above)); }
+  .chart { display: block; width: 100%; height: auto; }
+  .chart text { fill: var(--text-2); font-size: 11px; }
+  .axis line, .axis path { stroke: rgba(255,255,255,0.18); }
+  .grid-line { stroke: rgba(255,255,255,0.07); }
+  #tip { position: fixed; pointer-events: none; background: #111214; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.5; color: var(--text); display: none; z-index: 1000; white-space: nowrap; }
+  #tip .k { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-2); font-weight: 600; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.5; }
+  #error { color: #ff6b6b; font-size: 14px; }
+  .row2 { margin-top: 14px; }
+  a.btn { color: var(--accent); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Validation evidence</h1>
+  <div class="sub" id="sub">Loading…</div>
+  <div id="error"></div>
+
+  <div id="content" style="display:none">
+    <div class="controls">
+      <span>Compare the DSM against:</span>
+      <button type="button" data-target="canopy_top" class="active">ICESat-2 canopy top</button>
+      <button type="button" data-target="terrain">ICESat-2 ground</button>
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>Error at each lidar point (DSM − lidar)</h2>
+        <div id="map"></div>
+        <div class="legend"><span id="lg-lo"></span><span class="ramp"></span><span id="lg-hi"></span>
+          <span>blue: DSM below lidar · red: DSM above</span></div>
+      </div>
+      <div class="panel">
+        <h2 id="scatter-title">DSM vs. lidar height</h2>
+        <svg id="scatter" class="chart" viewBox="0 0 420 360" role="img" aria-label="Scatter of DSM height against lidar height"></svg>
+        <h2 style="margin-top:14px">Error distribution</h2>
+        <svg id="hist" class="chart" viewBox="0 0 420 180" role="img" aria-label="Histogram of DSM minus lidar error"></svg>
+      </div>
+    </div>
+
+    <div class="panel row2">
+      <h2>Largest errors <a class="btn" id="csv" href="#" download="validation_points.csv">· download all points (CSV)</a></h2>
+      <table id="worst"></table>
+      <div class="note">Every point is held out: ICESat-2 is independent of every DEM source and of the Depth Anything fit,
+        which is calibrated against the DEM, not the lidar. Canopy top = lidar ground + ATL08 canopy height (what a DSM should
+        match); ground = lidar ground alone. Heights are in the job DEM's own vertical datum.</div>
+    </div>
+  </div>
+</div>
+<div id="tip"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const params = new URLSearchParams(location.search);
+  const jobId = params.get('job');
+  const $ = id => document.getElementById(id);
+  const tip = $('tip');
+  const CLAMP = 30;  // colour saturates at +/- 30 m
+  let data = null, rows = [], target = 'canopy_top', map = null, layer = null;
+
+  const fmt = (v, d = 1) => (v === null || v === undefined || !Number.isFinite(v)) ? '—' : v.toFixed(d);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',') + ')';
+  function errColor(e) {
+    const t = Math.max(-1, Math.min(1, e / CLAMP));
+    const mid = hex(css('--mid'));
+    return t < 0 ? mix(mid, hex(css('--below')), -t) : mix(mid, hex(css('--above')), t);
+  }
+
+  function showTip(html, ev) {
+    tip.innerHTML = html; tip.style.display = 'block';
+    const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+  }
+  const hideTip = () => { tip.style.display = 'none'; };
+  const pointTip = p => `<span class="k">DSM</span> ${fmt(p.dsm)} m<br><span class="k">Lidar ${target === 'terrain' ? 'ground' : 'canopy top'}</span> ${fmt(p.ref)} m<br>` +
+    `<span class="k">Error</span> ${p.err > 0 ? '+' : ''}${fmt(p.err)} m<br><span class="k">Track</span> ${p.rgt} · cycle ${p.cycle}<br>` +
+    `<span class="k">${fmt(p.lat, 5)}, ${fmt(p.lon, 5)}</span>`;
+
+  function buildRows() {
+    const F = Object.fromEntries(data.fields.map((f, i) => [f, i]));
+    rows = data.points.map(a => ({
+      lat: a[F.lat], lon: a[F.lon], dsm: a[F.dsm_m], rgt: a[F.rgt], cycle: a[F.cycle],
+      ref: target === 'terrain' ? a[F.terrain_m] : a[F.canopy_top_m],
+      err: target === 'terrain' ? a[F.error_terrain_m] : a[F.error_canopy_top_m],
+    })).filter(r => r.err !== null && r.ref !== null);
+  }
+
+  function renderTiles() {
+    const s = data.stats[target];
+    const tiles = [['RMSE', fmt(s.rmse) + ' m'], ['MAE', fmt(s.mae) + ' m'], ['Bias (DSM − lidar)', (s.bias > 0 ? '+' : '') + fmt(s.bias) + ' m'],
+                   ['NMAD', fmt(s.nmad) + ' m'], ['Correlation r', fmt(s.corr, 4)], ['Lidar points', String(s.n)]];
+    $('tiles').innerHTML = tiles.map(([l, v]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  }
+
+  function renderMap() {
+    if (!map) {
+      map = L.map('map');
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }).addTo(map);
+    }
+    if (layer) layer.remove();
+    layer = L.layerGroup(rows.map(p => {
+      const m = L.circleMarker([p.lat, p.lon], { radius: 4, weight: 1, color: css('--surface'), fillColor: errColor(p.err), fillOpacity: 0.95 });
+      m.on('mouseover', e => showTip(pointTip(p), e.originalEvent)).on('mouseout', hideTip);
+      return m;
+    })).addTo(map);
+    if (rows.length) map.fitBounds(L.latLngBounds(rows.map(p => [p.lat, p.lon])), { padding: [16, 16] });
+    $('lg-lo').textContent = `−${CLAMP} m`; $('lg-hi').textContent = `+${CLAMP} m`;
+  }
+
+  const NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function niceTicks(lo, hi, n) {
+    const step = Math.pow(10, Math.floor(Math.log10((hi - lo) / n)));
+    const m = [1, 2, 5, 10].find(k => (hi - lo) / (k * step) <= n) * step;
+    const out = []; for (let v = Math.ceil(lo / m) * m; v <= hi + 1e-9; v += m) out.push(v);
+    return out;
+  }
+
+  function renderScatter() {
+    const svg = $('scatter'); svg.innerHTML = '';
+    const W = 420, H = 360, m = { l: 52, r: 12, t: 10, b: 36 };
+    const vals = rows.flatMap(p => [p.dsm, p.ref]);
+    const lo = Math.min(...vals), hi = Math.max(...vals), pad = (hi - lo) * 0.03 || 1;
+    const x = v => m.l + (v - lo + pad) / (hi - lo + 2 * pad) * (W - m.l - m.r);
+    const y = v => H - m.b - (v - lo + pad) / (hi - lo + 2 * pad) * (H - m.t - m.b);
+    for (const t of niceTicks(lo, hi, 5)) {
+      el('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: 'grid-line' }, svg);
+      el('text', { x: m.l - 6, y: y(t) + 4, 'text-anchor': 'end' }, svg).textContent = t;
+      el('text', { x: x(t), y: H - m.b + 16, 'text-anchor': 'middle' }, svg).textContent = t;
+    }
+    el('line', { x1: x(lo - pad), y1: y(lo - pad), x2: x(hi + pad), y2: y(hi + pad), stroke: 'rgba(255,255,255,0.45)', 'stroke-width': 1.5, 'stroke-dasharray': '4 4' }, svg);
+    el('text', { x: (W + m.l) / 2, y: H - 4, 'text-anchor': 'middle' }, svg).textContent =
+      `Lidar ${target === 'terrain' ? 'ground' : 'canopy top'} (m)`;
+    el('text', { x: 12, y: (H - m.b) / 2, 'text-anchor': 'middle', transform: `rotate(-90 12 ${(H - m.b) / 2})` }, svg).textContent = 'DSM (m)';
+    el('text', { x: W - m.r - 4, y: m.t + 12, 'text-anchor': 'end' }, svg).textContent = 'dashed: DSM = lidar';
+    for (const p of rows) {
+      const c = el('circle', { cx: x(p.ref), cy: y(p.dsm), r: 3, fill: errColor(p.err), stroke: css('--surface'), 'stroke-width': 1 }, svg);
+      c.addEventListener('mousemove', e => showTip(pointTip(p), e));
+      c.addEventListener('mouseleave', hideTip);
+    }
+    $('scatter-title').textContent = `DSM vs. lidar ${target === 'terrain' ? 'ground' : 'canopy top'} height`;
+  }
+
+  function renderHist() {
+    const svg = $('hist'); svg.innerHTML = '';
+    const W = 420, H = 180, m = { l: 40, r: 10, t: 8, b: 30 };
+    const errs = rows.map(p => p.err);
+    const bw = 2, lo = Math.floor(Math.min(...errs) / bw) * bw, hi = Math.ceil(Math.max(...errs) / bw) * bw || bw;
+    const nb = Math.max(1, Math.round((hi - lo) / bw)), counts = new Array(nb).fill(0);
+    errs.forEach(e => counts[Math.min(nb - 1, Math.floor((e - lo) / bw))]++);
+    const cmax = Math.max(...counts);
+    const x = v => m.l + (v - lo) / (hi - lo) * (W - m.l - m.r);
+    const y = c => H - m.b - c / cmax * (H - m.t - m.b);
+    for (const t of niceTicks(0, cmax, 3)) {
+      el('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: 'grid-line' }, svg);
+      el('text', { x: m.l - 6, y: y(t) + 4, 'text-anchor': 'end' }, svg).textContent = t;
+    }
+    for (const t of niceTicks(lo, hi, 6)) el('text', { x: x(t), y: H - m.b + 14, 'text-anchor': 'middle' }, svg).textContent = t;
+    el('text', { x: (W + m.l) / 2, y: H - 2, 'text-anchor': 'middle' }, svg).textContent = 'DSM − lidar (m), 2 m bins';
+    if (lo < 0 && hi > 0) el('line', { x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, stroke: 'rgba(255,255,255,0.45)', 'stroke-dasharray': '3 3' }, svg);
+    const bwPx = (W - m.l - m.r) / nb;
+    counts.forEach((c, i) => {
+      if (!c) return;
+      const x0 = m.l + i * bwPx + 1, w = Math.max(1, bwPx - 2), top = y(c), h = H - m.b - top;
+      const r = Math.min(4, w / 2, h);
+      // 4px rounded top, square at the baseline
+      el('path', { d: `M${x0},${H - m.b} V${top + r} Q${x0},${top} ${x0 + r},${top} H${x0 + w - r} Q${x0 + w},${top} ${x0 + w},${top + r} V${H - m.b} Z`, fill: css('--bar') }, svg);
+      const hit = el('rect', { x: m.l + i * bwPx, y: m.t, width: bwPx, height: H - m.t - m.b, fill: 'transparent' }, svg);
+      const a = lo + i * bw;
+      hit.addEventListener('mousemove', e => showTip(`<span class="k">Error</span> ${a} to ${a + bw} m<br><span class="k">Points</span> ${c}`, e));
+      hit.addEventListener('mouseleave', hideTip);
+    });
+  }
+
+  function renderWorst() {
+    const worst = [...rows].sort((a, b) => Math.abs(b.err) - Math.abs(a.err)).slice(0, 15);
+    $('worst').innerHTML = '<tr><th>Lat, lon</th><th>DSM (m)</th><th>Lidar (m)</th><th>Error (m)</th><th>Track · cycle</th></tr>' +
+      worst.map(p => `<tr><td>${fmt(p.lat, 5)}, ${fmt(p.lon, 5)}</td><td>${fmt(p.dsm)}</td><td>${fmt(p.ref)}</td>` +
+        `<td><span class="swatch" style="background:${errColor(p.err)}"></span>${p.err > 0 ? '+' : ''}${fmt(p.err)}</td><td>${p.rgt} · ${p.cycle}</td></tr>`).join('');
+  }
+
+  function render() {
+    buildRows(); renderTiles(); renderMap(); renderScatter(); renderHist(); renderWorst();
+  }
+
+  document.querySelectorAll('.controls button').forEach(b => b.addEventListener('click', () => {
+    target = b.dataset.target;
+    document.querySelectorAll('.controls button').forEach(o => o.classList.toggle('active', o === b));
+    render();
+  }));
+
+  (async function init() {
+    if (!jobId) { $('sub').textContent = ''; $('error').textContent = 'No job given: open this page from a finished job (…/validation/index.html?job=<id>).'; return; }
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(jobId)}/validation`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || res.statusText);
+      data = body;
+    } catch (err) {
+      $('sub').textContent = ''; $('error').textContent = `No validation evidence for this job: ${err.message}`; return;
+    }
+    $('sub').innerHTML = `Live: this job's DSM sampled at ${data.n_on_dsm} ICESat-2 ATL08 lidar segments ` +
+      `(truth from run <code>${data.source_run}</code>, heights in ${data.vertical_datum}). ` +
+      `<a href="/index.html">← back to upload</a>`;
+    $('content').style.display = 'block';
+    render();
+    // CSV of every point, both targets
+    const csv = [data.fields.join(','), ...data.points.map(r => r.map(v => v === null ? '' : v).join(','))].join('\n');
+    $('csv').href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  })();
+</script>
+</body>
+</html>

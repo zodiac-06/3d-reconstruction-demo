@@ -36,12 +36,17 @@
   .map-tools button.active { background: #4fc3f7; color: #0b0c10; }
   #bounds-map { height: 260px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); }
   #bounds-map.drawing { cursor: crosshair; }
+  .headline { font-size: 14px; line-height: 1.5; padding: 10px 12px; margin-bottom: 10px; border-radius: 6px; background: rgba(79,195,247,0.08); border: 1px solid rgba(79,195,247,0.3); }
+  .headline .tag { color: #9aa0a6; font-size: 12px; }
+  details.secondary { margin-top: 8px; font-size: 12px; color: #9aa0a6; }
+  details.secondary summary { cursor: pointer; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Georeferenced DSM Pipeline</h1>
-  <div class="subtitle">GeoTIFF → terrain DEM (Copernicus GLO-30) + Depth Anything detail → absolute-elevation DSM → viewable terrain</div>
+  <div class="subtitle">GeoTIFF → terrain DEM (Copernicus GLO-30) + Depth Anything detail → absolute-elevation DSM → viewable terrain
+    · <a href="/history.html" style="color:#4fc3f7">Job history</a></div>
 
   <div class="scope-note">
     <strong>Choose how to supply the area of interest.</strong> An already-cropped GeoTIFF is used as-is.
@@ -80,14 +85,17 @@
     <div id="status"></div>
     <div id="result">
       <div id="metrics-summary"></div>
+      <a id="link-dsm" href="#" style="display:none">Download DSM (GeoTIFF) ↓</a>
       <a id="link-map" href="/leaflet_pitch/index.html">Open 2D context map →</a>
       <a id="link-3d" href="/3d_visualization/index.html">Open 3D terrain flythrough →</a>
       <a id="link-court" href="/dem_court/index.html">Compare DEM sources (DEM Court) →</a>
+      <a id="link-validation" href="/validation/index.html" style="display:none">Validation evidence (ICESat-2, per point) →</a>
     </div>
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/validation/headline.js"></script>
 <script>
   const NAINITAL = { west: 79.42, south: 29.35, east: 79.51, north: 29.42 };
   const boundIds = ['west', 'south', 'east', 'north'];
@@ -173,6 +181,31 @@
   document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', refreshModeUI));
   refreshModeUI();
 
+  // Headline accuracy: the precomputed ICESat-2 result for this AOI, if
+  // there is one. The live pipeline doesn't compute it.
+  async function headlineHtml(jobBounds, demSource) {
+    const tag = '<span class="tag">precomputed offline vs ICESat-2, not live</span>';
+    let table;
+    try {
+      const res = await fetch('/validation/icesat2_precomputed.json');
+      if (!res.ok) throw new Error(res.statusText);
+      table = await res.json();
+    } catch (err) {
+      return `<div class="headline"><b>Accuracy:</b> precomputed ICESat-2 table unavailable (${err.message}).</div>`;
+    }
+    const aoi = matchPrecomputedAoi(jobBounds, table);
+    if (!aoi) {
+      return `<div class="headline"><b>Accuracy:</b> no precomputed ICESat-2 result for this AOI, ` +
+        `so this DSM's accuracy hasn't been checked against lidar.</div>`;
+    }
+    const demNote = demSource !== aoi.dem_source
+      ? `<br><span class="tag">This run used ${demSource}; the figures above are for ${aoi.dem_source}.</span>` : '';
+    return `<div class="headline"><b>Accuracy, ${aoi.name}:</b> RMSE ${aoi.rmse_canopy_top_m} m vs canopy top, ` +
+      `${aoi.rmse_ground_m} m vs ground<br>${tag}${demNote}</div>`;
+  }
+
+  const POLL_MS = 2000;
+
   async function submitJob() {
     const statusEl = document.getElementById('status');
     const resultEl = document.getElementById('result');
@@ -200,10 +233,22 @@
     resultEl.style.display = 'none';
 
     try {
-      const res = await fetch('/jobs', { method: 'POST', body: formData });
-      const data = await res.json();
-
+      // Start the job and poll it, rather than holding one request open for
+      // the whole run: proxies like Cloudflare cut requests after ~100 s.
+      const res = await fetch('/jobs?wait=false', { method: 'POST', body: formData });
+      let data = await res.json();
       if (!res.ok) return fail(`Rejected: ${data.detail || res.statusText}`);
+      const t0 = Date.now();
+      while (data.status === 'queued' || data.status === 'running') {
+        const secs = Math.round((Date.now() - t0) / 1000);
+        statusEl.textContent = data.status === 'queued'
+          ? `Queued behind another job… ${secs}s`
+          : `Processing (DEM fetch + depth estimation + fusion)… ${secs}s`;
+        await new Promise(r => setTimeout(r, POLL_MS));
+        const poll = await fetch(`/jobs/${encodeURIComponent(data.id)}`);
+        if (!poll.ok) return fail(`Lost track of job ${data.id}: ${poll.status} ${poll.statusText}`);
+        data = await poll.json();
+      }
       if (data.status !== 'done') return fail(`Failed: ${data.error || 'unknown error'}`);
 
       const m = data.metrics;
@@ -220,15 +265,31 @@
       const fellBack = m.dem_source !== m.dem_requested
         ? ` (requested ${m.dem_requested}, which was unavailable)` : '';
       document.getElementById('metrics-summary').innerHTML =
+        await headlineHtml(data.bounds_epsg4326, m.dem_source) +
         sourceLine +
         `<b>Terrain DEM:</b> ${m.dem_source}${fellBack}, ${m.vertical_datum} heights. ` +
         `The DSM's elevations come from this DEM; Depth Anything adds a detail layer ` +
-        `(std ${m.detail_std_m.toFixed(2)}m).<br>` +
-        `<b>Consistency check</b> — Depth Anything vs. DEM, held-out points ` +
-        `(how well relative depth alone tracks elevation; <i>not</i> the DSM's accuracy):<br>` +
+        `(std ${m.detail_std_m.toFixed(2)}m).` +
+        `<details class="secondary"><summary>Depth model vs. DEM, held-out points: ` +
+        `RMSE ${m.rmse.toFixed(2)}m. The depth model adds no signal.</summary>` +
+        `How well Depth Anything's relative depth alone tracks the DEM (a consistency check, ` +
+        `<i>not</i> the DSM's accuracy). Against ICESat-2, the DSM with and without the depth ` +
+        `layer score the same.<br>` +
         `RMSE: ${m.rmse.toFixed(2)}m &nbsp; MAE: ${m.mae.toFixed(2)}m &nbsp; correlation: ${m.correlation.toFixed(3)}<br>` +
-        `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}`;
+        `scale: slope=${m.slope.toFixed(2)}, intercept=${m.intercept.toFixed(2)}</details>`;
       document.getElementById('link-court').href = `/dem_court/index.html?job=${encodeURIComponent(data.id)}`;
+      const linkDsm = document.getElementById('link-dsm');
+      linkDsm.style.display = data.dsm_download ? 'inline-block' : 'none';
+      if (data.dsm_download) linkDsm.href = data.dsm_download;
+      const v = data.validation || {};
+      const linkVal = document.getElementById('link-validation');
+      const canopy = v.available ? v.stats.canopy_top : null;
+      const show = Boolean(canopy && Number.isFinite(canopy.rmse));
+      linkVal.style.display = show ? 'inline-block' : 'none';
+      if (show) {
+        linkVal.href = `/validation/index.html?job=${encodeURIComponent(data.id)}`;
+        linkVal.textContent = `Validation evidence (${canopy.n} ICESat-2 points, live RMSE ${canopy.rmse.toFixed(1)} m) →`;
+      }
       resultEl.style.display = 'block';
     } catch (err) {
       fail(`Error: ${err.message}`);

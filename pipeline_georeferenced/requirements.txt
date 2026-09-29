@@ -12,6 +12,10 @@ scipy
 shapely
 requests
 numpy
+# DEM Court (dem_court/court.py) and the validation evidence panel
+# (validation/evidence.py) are imported when the server starts
+pandas
+pyproj
 
 # API
 fastapi

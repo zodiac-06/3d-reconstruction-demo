@@ -41,14 +41,18 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -97,6 +101,7 @@ crop_geotiff_mod = _load_module("crop_geotiff_mod", QGIS_PREP_DIR / "02_crop_geo
 extract_metadata_mod = _load_module("extract_metadata_mod", QGIS_PREP_DIR / "03_extract_metadata.py")
 fetch_srtm_mod = _load_module("fetch_srtm_mod", QGIS_PREP_DIR / "04_fetch_srtm.py")
 dem_court_mod = _load_module("dem_court_mod", BASE_DIR / "dem_court" / "court.py")
+evidence_mod = _load_module("evidence_mod", BASE_DIR / "validation" / "evidence.py")
 
 from aoi_config import SOURCE_BUFFER_DEG  # noqa: E402
 from geotiff_to_viewer_assets import generate_viewer_assets  # noqa: E402
@@ -144,12 +149,32 @@ def _load_jobs():
     return {}
 
 
+# Jobs run on FastAPI's worker threads (create_job is a plain def), so the
+# server keeps answering page and API requests while one runs. The pipeline
+# writes fixed paths (the crop, output_dsm.tif, the viewer assets), so only
+# one job may run at a time: _PIPELINE_LOCK serialises them, and a waiting
+# job shows as "queued". _JOBS_LOCK guards the job store's writes.
+_PIPELINE_LOCK = threading.Lock()
+_JOBS_LOCK = threading.RLock()
+
+
 def _save_jobs():
-    with open(JOBS_STORE_PATH, "w") as f:
-        json.dump(jobs, f, indent=2)
+    # Write-then-rename, so a reader (or a restart after a crash mid-write)
+    # never sees a truncated store.
+    with _JOBS_LOCK:
+        tmp = JOBS_STORE_PATH.with_name(JOBS_STORE_PATH.name + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(jobs, f, indent=2)
+        os.replace(tmp, JOBS_STORE_PATH)
 
 
 jobs = _load_jobs()
+# A job that was queued or running when the server stopped will never
+# finish (jobs run in this process); say so instead of leaving clients
+# polling forever.
+for _job in jobs.values():
+    if _job.get("status") in ("queued", "running"):
+        _job.update(status="failed", error="server restarted before this job finished; please resubmit")
 
 
 @app.get("/api/health")
@@ -319,7 +344,7 @@ def _run_pipeline(dem_source, sources, timings):
 
 
 @app.post("/jobs")
-async def create_job(
+def create_job(
     geotiff: UploadFile | None = File(
         None, description="A GeoTIFF: already cropped (no bounds), or a larger scene to crop "
                           "to the bounds -- see README.md"),
@@ -329,6 +354,10 @@ async def create_job(
     north: float | None = Form(None),
     dem_source: str | None = Form(
         None, description="Preferred terrain DEM: copernicus (default), srtm, nasadem, or fabdem"),
+    wait: bool = Query(
+        True, description="true: respond when the job is finished. false: respond at once with "
+                          "the queued job and poll GET /jobs/{id} -- for proxies that cut long "
+                          "requests (Cloudflare returns 524 after ~100 s)"),
 ):
     dem_source = dem_source or DEM_SOURCE
     try:
@@ -339,30 +368,217 @@ async def create_job(
     mode = _resolve_input_mode(geotiff, bounds)
 
     job_id = str(uuid4())
-    jobs[job_id] = {"id": job_id, "status": "running", "error": None, "metrics": None,
-                     "view_urls": None, "input_mode": mode}
-    _save_jobs()
+    with _JOBS_LOCK:
+        jobs[job_id] = {"id": job_id, "status": "queued", "error": None, "metrics": None,
+                        "view_urls": None, "input_mode": mode,
+                        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        _save_jobs()
 
+    queued_at = time.perf_counter()
+
+    def run(upload):
+        with _PIPELINE_LOCK:
+            return _run_job(job_id, mode, upload, bounds, dem_source, sources,
+                            queued_s=round(time.perf_counter() - queued_at, 2))
+
+    if wait:
+        return run(geotiff)
+
+    # The request's UploadFile is closed once the response is sent, so the
+    # background job gets its own copy (the pipeline's input paths are
+    # shared and may only be written under _PIPELINE_LOCK).
+    upload = None
+    if geotiff is not None and geotiff.filename:
+        spool = BASE_DIR / JOBS_DIR_NAME / f"{job_id}_upload.tif"
+        with open(spool, "wb") as f:
+            shutil.copyfileobj(geotiff.file, f)
+        upload = SimpleNamespace(filename=geotiff.filename, path=spool)
+
+    def run_background():
+        f = None
+        try:
+            if upload is not None:
+                f = open(upload.path, "rb")
+            run(SimpleNamespace(filename=upload.filename, file=f) if upload else None)
+        finally:
+            if f is not None:
+                f.close()
+                upload.path.unlink(missing_ok=True)
+
+    threading.Thread(target=run_background, name=f"job-{job_id[:8]}", daemon=True).start()
+    with _JOBS_LOCK:
+        return dict(jobs[job_id])
+
+
+def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
+    """One job, start to finish. Caller holds _PIPELINE_LOCK."""
+    with _JOBS_LOCK:
+        jobs[job_id]["status"] = "running"
+        _save_jobs()
     timings = {}
     started = time.perf_counter()
+    result = error = None
     try:
         jobs[job_id]["input"] = _prepare_cropped_input(mode, geotiff, bounds, timings)
-        jobs[job_id].update(status="done", **_run_pipeline(dem_source, sources, timings))
+        result = _run_pipeline(dem_source, sources, timings)
     except Exception as exc:
         _tick(timings, None)
-        jobs[job_id].update(status="failed", error=str(exc))
-    timings["total"] = round(time.perf_counter() - started, 2)
-    jobs[job_id]["timings_s"] = timings
-
-    _save_jobs()
+        error = str(exc)
+    try:
+        if result is not None:
+            # Still "running" to anyone polling until everything below is
+            # recorded: a client that sees "done" gets the download link,
+            # validation and timings with it.
+            jobs[job_id].update(**result)
+            jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
+            _keep_job_dsm(job_id)
+            _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
+    finally:
+        # Whatever went wrong above, the final state and the store change
+        # together (GET /jobs/{id} reads under the same lock).
+        with _JOBS_LOCK:
+            timings["total"] = round(time.perf_counter() - started, 2)
+            timings["queued"] = queued_s
+            jobs[job_id]["timings_s"] = timings
+            if result is not None:
+                jobs[job_id]["status"] = "done"
+            else:
+                jobs[job_id].update(status="failed", error=error)
+            _save_jobs()
     return jobs[job_id]
+
+
+def _keep_job_dsm(job_id):
+    """_save_job_dsm, recording a failure on the job instead of raising: the
+    DSM itself was produced (and is in the viewers), only the kept, tagged
+    copy is missing, so the job stays "done" with the reason attached."""
+    try:
+        jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
+    except Exception as exc:
+        _dsm_path(job_id).unlink(missing_ok=True)  # no half-written copy behind a 200
+        jobs[job_id]["dsm_download"] = None
+        jobs[job_id]["dsm_download_error"] = f"could not keep this job's DSM: {exc}"
+
+
+def _snapshot_court_grid(bounds):
+    """Record this job's pixel grid for DEM Court while the job still owns
+    the pipeline's crop; the court then never reads the live crop, which a
+    later job may be rewriting. Best effort: the DSM is still good if this
+    fails, and the court falls back to its own check."""
+    if not bounds:
+        return
+    try:
+        dem_court_mod.ensure_grid((bounds["west"], bounds["south"], bounds["east"], bounds["north"]),
+                                  str(CROPPED_PATH))
+    except Exception:
+        pass
+
+
+def _dsm_path(job_id):
+    return BASE_DIR / JOBS_DIR_NAME / f"{job_id}_dsm.tif"
+
+
+def _save_job_dsm(job_id, metrics):
+    """Keep this job's DSM (the pipeline overwrites output_dsm.tif on every
+    job) and tag it so the file says what its heights are: without the
+    vertical datum a downloaded DSM is ambiguous by metres (Copernicus's
+    EGM2008 and SRTM's EGM96 differ by ~3 m at Nainital)."""
+    import rasterio
+
+    path = _dsm_path(job_id)
+    shutil.copyfile(DSM_OUTPUT_PATH, path)
+    with rasterio.open(path, "r+") as ds:
+        ds.update_tags(
+            UNITS="metre",
+            VERTICAL_DATUM=metrics["vertical_datum"],
+            DEM_SOURCE=metrics["dem_source"],
+            METHOD="DEM + Depth Anything V2 high-pass detail layer (s = 1, 30 m)",
+            PRODUCER="DepthWizard georeferenced pipeline",
+            JOB_ID=job_id,
+        )
+        ds.set_band_description(1, f"surface elevation (m, {metrics['vertical_datum']})")
+    return f"/jobs/{job_id}/dsm.tif"
+
+
+def _truth_dirs():
+    """Where ICESat-2 evaluation runs live (same search as DEM Court)."""
+    return sorted(str(d) for d in DSM_CAL_DIR.iterdir() if d.is_dir())
+
+
+def _validation_path(job_id):
+    return BASE_DIR / JOBS_DIR_NAME / f"{job_id}_validation.json"
+
+
+def _save_validation(job_id, vertical_datum):
+    """Score this job's DSM against ICESat-2, if truth exists for its grid.
+    The per-point evidence goes to its own file (it can be thousands of
+    points); the job keeps only the summary. A scoring failure is recorded,
+    not raised -- the DSM itself is still good."""
+    try:
+        evidence = evidence_mod.build_evidence(str(DSM_OUTPUT_PATH), vertical_datum, _truth_dirs())
+    except Exception as exc:
+        return {"available": False, "reason": f"validation failed: {exc}"}
+    if evidence is None:
+        return {"available": False,
+                "reason": "no ICESat-2 truth for this AOI's grid (see dsm_calibration/fetch_icesat2_truth.py)"}
+    with open(_validation_path(job_id), "w") as f:
+        json.dump(evidence, f)
+    return {"available": True, **{k: evidence[k] for k in
+                                  ("source_run", "vertical_datum", "n_segments", "n_on_dsm", "stats")}}
+
+
+@app.get("/jobs")
+def list_jobs():
+    """Every job, newest first, as the summary the history page needs."""
+    keys = ("id", "status", "created_at", "input_mode", "error", "bounds_epsg4326", "dsm_download")
+    out = []
+    with _JOBS_LOCK:
+        snapshot = list(jobs.values())
+    for order, job in enumerate(snapshot):  # insertion order breaks same-second ties
+        m = job.get("metrics") or {}
+        v = job.get("validation") or {}
+        canopy = (v.get("stats") or {}).get("canopy_top") or {}
+        out.append({**{k: job.get(k) for k in keys},
+                    "dem_source": m.get("dem_source"), "vertical_datum": m.get("vertical_datum"),
+                    "validation_rmse_canopy_top_m": canopy.get("rmse") if v.get("available") else None,
+                    "validation_n": canopy.get("n") if v.get("available") else None,
+                    "_order": order})
+    # jobs from before created_at existed sort last
+    out.sort(key=lambda j: (j["created_at"] or "", j.pop("_order")), reverse=True)
+    return out
+
+
+@app.get("/jobs/{job_id}/dsm.tif")
+def download_dsm(job_id: str):
+    """This job's DSM as a GeoTIFF, tagged with units, vertical datum and DEM source."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not _dsm_path(job_id).exists():
+        raise HTTPException(status_code=409, detail=jobs[job_id].get("dsm_download_error")
+                            or "No DSM kept for this job (failed, or run before downloads existed)")
+    return FileResponse(_dsm_path(job_id), media_type="image/tiff",
+                        filename=f"depthwizard_dsm_{job_id[:8]}.tif")
 
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
-    if job_id not in jobs:
+    with _JOBS_LOCK:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return dict(jobs[job_id])
+
+
+@app.get("/jobs/{job_id}/validation")
+def get_validation(job_id: str):
+    """Per-point ICESat-2 evidence for the job's DSM (validation/evidence.py)."""
+    job = jobs.get(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return jobs[job_id]
+    summary = job.get("validation") or {}
+    if not summary.get("available") or not _validation_path(job_id).exists():
+        raise HTTPException(status_code=409, detail=summary.get("reason", "Job has no validation evidence"))
+    with open(_validation_path(job_id)) as f:
+        return dict(json.load(f), job_id=job_id)
 
 
 @app.get("/jobs/{job_id}/dem-court")
@@ -386,11 +602,47 @@ def get_dem_court(job_id: str, fabdem: bool = False):
     return dict(manifest, job_id=job_id)
 
 
-# Serves qgis_prep/data/, leaflet_pitch/, 3d_visualization/, dsm_calibration/
-# all at their existing relative paths to each other -- those pages already
-# use paths like ../qgis_prep/data/geo_metadata.json and
-# ../3d_visualization/index.html, so mounting this whole directory as one
-# static root (instead of separate mounts per subfolder) is what makes
-# those existing, already-tested relative paths keep working unchanged.
+# The pages use paths like ../qgis_prep/data/geo_metadata.json and
+# ../3d_visualization/index.html, so this directory stays mounted as one
+# static root -- but only the files the pages load are served. The folder
+# also holds the source, the job store, uploaded/fetched GeoTIFFs, lidar
+# truth and model weights, none of which should be public on the demo URL.
+PUBLIC_FILES = {
+    "index.html", "history.html",
+    "3d_visualization/index.html", "leaflet_pitch/index.html",
+    "dem_court/index.html",
+    "validation/index.html", "validation/headline.js", "validation/icesat2_precomputed.json",
+    "qgis_prep/data/geo_metadata.json",
+}
+# (directory prefix, allowed extensions): the 3D viewer and its asset
+# folders (assets/, assets_bangalore/, ...), DEM Court's per-AOI grids
+PUBLIC_TREES = (
+    ("3d_visualization/", {".html", ".js", ".png", ".jpg", ".jpeg", ".json"}),
+    ("dem_court/cache/", {".f32"}),
+)
+
+
+def is_public_path(path):
+    """Whether a static request path (relative to BASE_DIR) may be served."""
+    path = path.replace("\\", "/").lstrip("/")
+    if path in ("", "."):
+        return True  # -> index.html
+    parts = path.split("/")
+    if any(p in ("..", ".") or p.startswith(".") for p in parts):
+        return False
+    path = "/".join(p for p in parts if p)
+    if path in PUBLIC_FILES or f"{path}/index.html" in PUBLIC_FILES:
+        return True
+    ext = os.path.splitext(path)[1].lower()
+    return any(path.startswith(prefix) and ext in exts for prefix, exts in PUBLIC_TREES)
+
+
+class PublicStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        if not is_public_path(path):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return await super().get_response(path, scope)
+
+
 # Registered last so it never shadows /jobs* or /api/* above.
-app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="pipeline_static")
+app.mount("/", PublicStaticFiles(directory=str(BASE_DIR), html=True), name="pipeline_static")
