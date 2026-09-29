@@ -52,7 +52,9 @@
   <span class="licence">FABDEM is CC BY-NC-SA 4.0 — non-commercial use only; heavy fetch (read from multi-GB archives).
     It is bare earth (trees and buildings removed), so under canopy and buildings it will sit below the surface models by design.</span>
   <label><input type="checkbox" id="icesat-box" checked /> ICESat-2 reference points <span class="muted">(on the Copernicus panel)</span></label>
-  <span>Agree threshold: <b id="thr"></b> spread</span>
+  <label><input type="checkbox" id="hs-box" /> Hillshade source panels <span class="muted">(same sun for all: azimuth 315°, altitude 45°)</span></label>
+  <label>Agree threshold <input type="range" id="thr-slider" min="1" max="30" step="0.5" value="5" style="vertical-align:middle" />
+    <b id="thr"></b> spread · <b id="thr-pct"></b> of pixels over it</label>
 </div>
 <div id="status">Loading…</div>
 <table class="datum" id="datum-table"></table>
@@ -64,8 +66,11 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // Pixels whose spread (max - min across sources) is at most this many metres "agree".
-// The server sends its value (dem_court/court.py AGREE_THRESHOLD_M); this is the fallback.
+// Set by the slider (1-30 m); starts at the server's default (dem_court/court.py
+// AGREE_THRESHOLD_M), this value only if the server sends none.
 let AGREE_THRESHOLD_M = 5.0;
+// One sun for every source panel, so shading differences come from the DEMs, not the light.
+const HILLSHADE = { azimuth_deg: 315, altitude_deg: 45 };
 
 const RAMPS = {
   elevation: ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'],
@@ -108,6 +113,7 @@ function utmToLatLon(E, N, zone, south) {
 }
 
 let court = null, data = {}, shift = null, maps = [], crosshairs = [], pinned = false, icesatIndex = null;
+let spreadValues = null, lastPixel = null, sourcePanels = {};
 // Reference first, then the server's order -- not whichever raster finished downloading first.
 const sourceOrder = () => [court.reference, ...Object.keys(court.sources).filter(s => s !== court.reference)].filter(s => s in data);
 
@@ -157,6 +163,7 @@ const fmt = (v, d = 2) => v === null || v === undefined ? '—' : v.toFixed(d);
 const sgn = v => v === null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2);
 
 function showInspector(row, col) {
+  lastPixel = [row, col];
   const r = inspect(row, col);
   const body = document.getElementById('insp-body');
   if (!r) { body.innerHTML = '<span class="muted">Outside the AOI.</span>'; return; }
@@ -181,14 +188,36 @@ function showInspector(row, col) {
   crosshairs.forEach(c => c.setBounds(b).setStyle({ opacity: 1 }));
 }
 
-function renderImage(values, colorFor) {
+// Hillshade (Horn 1981 gradient; same sign conventions as ESRI / GDAL gdaldem), in [0, 1].
+// Edge pixels reuse their nearest in-grid neighbour; NaN if any of the 3x3 is NaN.
+function hillshade(z, w, h, cellM, az = HILLSHADE.azimuth_deg, alt = HILLSHADE.altitude_deg) {
+  const zen = (90 - alt) * Math.PI / 180, azm = ((360 - az + 90) % 360) * Math.PI / 180;
+  const out = new Float32Array(w * h);
+  const at = (r, c) => z[Math.min(h - 1, Math.max(0, r)) * w + Math.min(w - 1, Math.max(0, c))];
+  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+    const a = at(r - 1, c - 1), b = at(r - 1, c), cc = at(r - 1, c + 1), d = at(r, c - 1),
+          f = at(r, c + 1), g = at(r + 1, c - 1), hh = at(r + 1, c), i = at(r + 1, c + 1);
+    const dzdx = ((cc + 2 * f + i) - (a + 2 * d + g)) / (8 * cellM);
+    const dzdy = ((g + 2 * hh + i) - (a + 2 * b + cc)) / (8 * cellM);
+    const slope = Math.atan(Math.hypot(dzdx, dzdy));
+    let aspect;
+    if (dzdx !== 0) { aspect = Math.atan2(dzdy, -dzdx); if (aspect < 0) aspect += 2 * Math.PI; }
+    else aspect = dzdy > 0 ? Math.PI / 2 : (dzdy < 0 ? 1.5 * Math.PI : 0);
+    const v = Math.cos(zen) * Math.cos(slope) + Math.sin(zen) * Math.sin(slope) * Math.cos(azm - aspect);
+    out[r * w + c] = Number.isNaN(v) ? NaN : Math.max(0, v);
+  }
+  return out;
+}
+
+function renderImage(values, colorFor, shade = null) {
   const g = court.grid, cv = document.createElement('canvas');
   cv.width = g.width; cv.height = g.height;
   const ctx = cv.getContext('2d'), img = ctx.createImageData(g.width, g.height);
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
     if (Number.isNaN(v)) continue;
-    const [r, gg, b] = colorFor(v);
+    let [r, gg, b] = colorFor(v);
+    if (shade) { const k = Number.isNaN(shade[i]) ? 1 : 0.25 + 0.75 * shade[i]; r *= k; gg *= k; b *= k; }
     img.data[4 * i] = r; img.data[4 * i + 1] = gg; img.data[4 * i + 2] = b; img.data[4 * i + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
@@ -210,7 +239,7 @@ function addPanel(title, sub, imageUrl, legendHtml, withIcesat) {
   const g = court.grid, bounds = [[-g.height, 0], [0, g.width]];
   const map = L.map(div.querySelector('.map'), { crs: L.CRS.Simple, minZoom: -4, maxZoom: 5, zoomSnap: 0.25,
                                                  attributionControl: false, preferCanvas: true });
-  L.imageOverlay(imageUrl, bounds).addTo(map);
+  map._overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
   map.fitBounds(bounds);
   crosshairs.push(L.rectangle([[0, 0], [0, 0]], { color: '#fff', weight: 2, fill: false, opacity: 0, interactive: false }).addTo(map));
   if (withIcesat && court.icesat2) {
@@ -222,6 +251,7 @@ function addPanel(title, sub, imageUrl, legendHtml, withIcesat) {
   map.on('mousemove', e => { if (!pinned) showInspector(Math.floor(-e.latlng.lat), Math.floor(e.latlng.lng)); });
   map.on('click', e => { pinned = !pinned; showInspector(Math.floor(-e.latlng.lat), Math.floor(e.latlng.lng)); });
   maps.push(map);
+  return map;
 }
 
 let syncing = false;
@@ -265,7 +295,6 @@ async function load() {
   const b = court.bbox_epsg4326;
   document.getElementById('aoi-line').textContent =
     `AOI ${b[1].toFixed(4)}–${b[3].toFixed(4)}°N, ${b[0].toFixed(4)}–${b[2].toFixed(4)}°E · ${court.grid.width}×${court.grid.height} px @ ${court.grid.pixel_m} m · ${court.grid.crs}`;
-  document.getElementById('thr').textContent = `${AGREE_THRESHOLD_M} m`;
   const failed = Object.entries(court.sources).filter(([, v]) => !v.available);
   window.__court.timings = { api_ms: t1 - t0, rasters_ms: t2 - t1, render_ms: t3 - t2, total_ms: t3 - t0,
                              server_load_s: court.load_time_s, cache_hit: court.cache_hit };
@@ -290,13 +319,16 @@ function render(avail) {
   }
   document.getElementById('datum-table').innerHTML = rows;
 
-  // Shared elevation ramp across every source
+  // Shared elevation ramp across every source (optionally hillshaded -- see setHillshade)
   const [lo, hi] = cmp.height_range;
+  sourcePanels = {};
   for (const s of avail) {
-    const url = renderImage(data[s], v => rampColor(RAMPS.elevation, (v - lo) / (hi - lo)));
-    addPanel(NAMES[s], `${court.sources[s].datum_tag}${court.sources[s].correction.applied ? '→EGM2008' : ''}`, url,
+    const color = v => rampColor(RAMPS.elevation, (v - lo) / (hi - lo));
+    const plain = renderImage(data[s], color);
+    const map = addPanel(NAMES[s], `${court.sources[s].datum_tag}${court.sources[s].correction.applied ? '→EGM2008' : ''}`, plain,
              legend(RAMPS.elevation, [`${lo.toFixed(0)} m`, `${((lo + hi) / 2).toFixed(0)} m`, `${hi.toFixed(0)} m`], 'shared scale, all sources (EGM2008)'),
              s === ref);
+    sourcePanels[s] = { map, plain, shaded: null, color };
   }
   // Difference vs reference, one symmetric diverging scale for all
   const others = avail.filter(s => s !== ref);
@@ -315,12 +347,42 @@ function render(avail) {
     for (const s of avail) { const v = data[s][i]; if (!Number.isNaN(v)) { mx = Math.max(mx, v); mn = Math.min(mn, v); k++; } }
     spread[i] = k >= 2 ? mx - mn : NaN;
   }
-  const S = Math.max(2 * AGREE_THRESHOLD_M, Math.ceil(cmp.spread.p95));
+  spreadValues = spread;
+  const S = Math.max(10, Math.ceil(cmp.spread.p95));
   addPanel('Spread', `max − min, ${avail.length} sources · mean ${cmp.spread.mean.toFixed(2)} m, p95 ${cmp.spread.p95.toFixed(2)} m`,
            renderImage(spread, v => rampColor(RAMPS.spread, v / S)),
-           legend(RAMPS.spread, ['0 m', `${S / 2} m`, `≥ ${S} m`],
-                  `${(cmp.spread_frac_over_threshold * 100).toFixed(1)}% of pixels over the ${AGREE_THRESHOLD_M} m agree threshold`), false);
+           legend(RAMPS.spread, ['0 m', `${S / 2} m`, `≥ ${S} m`], '<span id="spread-note"></span>'), false);
   linkMaps();
+  setThreshold(AGREE_THRESHOLD_M);
+  setHillshade(hsBox.checked);
+}
+
+// Fraction of pixels (with >= 2 sources) whose spread exceeds t metres.
+function fracOver(t) {
+  let n = 0, over = 0;
+  for (const v of spreadValues) if (!Number.isNaN(v)) { n++; if (v > t) over++; }
+  return n ? over / n : NaN;
+}
+
+function setThreshold(t) {
+  AGREE_THRESHOLD_M = Number(t);
+  thrSlider.value = AGREE_THRESHOLD_M;
+  const pct = (fracOver(AGREE_THRESHOLD_M) * 100).toFixed(1);
+  document.getElementById('thr').textContent = `${AGREE_THRESHOLD_M} m`;
+  document.getElementById('thr-pct').textContent = `${pct}%`;
+  const note = document.getElementById('spread-note');
+  if (note) note.textContent = `${pct}% of pixels over the ${AGREE_THRESHOLD_M} m agree threshold`;
+  if (lastPixel) showInspector(...lastPixel);
+}
+
+// Swap the source panels' images between plain and hillshaded; the maps (and view) stay.
+function setHillshade(on) {
+  const g = court.grid;
+  for (const [s, p] of Object.entries(sourcePanels)) {
+    if (on && !p.shaded)
+      p.shaded = renderImage(data[s], p.color, hillshade(data[s], g.width, g.height, g.pixel_m));
+    p.map._overlay.setUrl(on ? p.shaded : p.plain);
+  }
 }
 
 fabdemBox.addEventListener('change', () => {
@@ -330,9 +392,14 @@ fabdemBox.addEventListener('change', () => {
   window.__court.ready = false;
   load().catch(err => { statusEl.className = 'error'; statusEl.textContent = `Error: ${err.message}`; });
 });
+const hsBox = document.getElementById('hs-box');
+const thrSlider = document.getElementById('thr-slider');
+hsBox.addEventListener('change', () => court && setHillshade(hsBox.checked));
+thrSlider.addEventListener('input', () => court && setThreshold(thrSlider.value));
 icesatBox.addEventListener('change', () => maps.forEach(m => m._icesat && (icesatBox.checked ? m._icesat.addTo(m) : m._icesat.remove())));
 
-window.__court = { inspect, ready: false, get maps() { return maps; }, get manifest() { return court; } };
+window.__court = { inspect, hillshade, fracOver, setThreshold, setHillshade, ready: false,
+                   get maps() { return maps; }, get manifest() { return court; } };
 load().catch(err => { statusEl.className = 'error'; statusEl.textContent = `Error: ${err.message}`; });
 </script>
 </body>
