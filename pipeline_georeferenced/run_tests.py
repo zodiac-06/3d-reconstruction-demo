@@ -16,6 +16,7 @@ TESTS = [
     "dsm_calibration/test_viewer_probe.py",
     "dsm_calibration/test_render_modes.py",
     "dsm_calibration/test_pixel_size.py",
+    "dsm_calibration/test_viewer_assets.py",
     "validation/test_evidence.py",
     "test_jobs_api.py",
     "test_concurrency.py",

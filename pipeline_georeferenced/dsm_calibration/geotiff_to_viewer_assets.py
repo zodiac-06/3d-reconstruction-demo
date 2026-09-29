@@ -40,7 +40,9 @@ def convert_elevation(dsm_path, out_png_path):
 
     min_elev, max_elev = float(arr.min()), float(arr.max())
     normalized = (arr - min_elev) / max(max_elev - min_elev, 1e-9)
-    as_16bit = np.clip(normalized * 65535, 0, 65535).astype(np.uint16)
+    # round to the nearest step: astype alone truncates, reading every height
+    # up to one step (~2.8 cm over Nainital's range) low
+    as_16bit = np.clip(np.rint(normalized * 65535), 0, 65535).astype(np.uint16)
 
     Image.fromarray(as_16bit, mode="I;16").save(out_png_path)
     return shape, min_elev, max_elev
