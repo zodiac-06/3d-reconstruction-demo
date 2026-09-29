@@ -12,13 +12,18 @@ Checks:
 - GET /jobs lists newest first, jobs without a timestamp last;
 - a failed job has no download (409), an unknown job 404;
 - a job whose grid has ICESat-2 truth gets a validation summary through
-  the real create_job path.
+  the real create_job path;
+- if keeping the DSM fails (here: the pipeline leaves a file rasterio
+  can't open for update), the job is still answered, stays "done" with the
+  reason recorded, no partial copy is left, the job store is saved, and the
+  download says why -- for wait=true and for a wait=false background job.
 
     python test_jobs_api.py
 """
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -129,6 +134,41 @@ def main():
         check(client.get(f"/jobs/{j3['id']}/dsm.tif").status_code == 409, "failed job's DSM -> 409")
         check(client.get("/jobs/old/dsm.tif").status_code == 409, "pre-download job's DSM -> 409")
         check(client.get("/jobs/nope/dsm.tif").status_code == 404, "unknown job -> 404")
+
+        # --- keeping the DSM fails: the pipeline "succeeds" but leaves a file
+        # rasterio can't open for update (where test_concurrency once failed)
+        def corrupt_pipeline(dem_source, sources, timings):
+            out.write_bytes(b"not a GeoTIFF")
+            return {"metrics": {"dem_source": "copernicus", "vertical_datum": "EGM2008"},
+                    "view_urls": {}, "bounds_epsg4326": meta["bounds_epsg4326"]}
+
+        app_main._run_pipeline = corrupt_pipeline
+        r = client.post("/jobs", files={"geotiff": ("a.tif", b"x", "image/tiff")})
+        j4 = r.json()
+        err = j4.get("dsm_download_error") or ""
+        check(r.status_code == 200 and j4["status"] == "done" and j4["dsm_download"] is None
+              and err.startswith("could not keep this job's DSM"),
+              f"DSM copy fails (wait=true): {r.status_code}, status {j4['status']}, error recorded: {err[:60]}...")
+        check(not (tmp / "jobs" / f"{j4['id']}_dsm.tif").exists(), "no partial DSM copy left behind")
+        stored = json.loads(app_main.JOBS_STORE_PATH.read_text())[j4["id"]]
+        check(stored["status"] == "done" and stored.get("dsm_download_error") == err and "timings_s" in stored,
+              "job store saved with the error and timings")
+        check(j4["validation"]["available"] is False and j4["validation"]["reason"].startswith("validation failed"),
+              "validation of the unreadable DSM recorded as failed, not raised")
+        r = client.get(f"/jobs/{j4['id']}/dsm.tif")
+        check(r.status_code == 409 and r.json()["detail"] == err, "download -> 409 with the recorded reason")
+
+        r = client.post("/jobs?wait=false", files={"geotiff": ("a.tif", b"x", "image/tiff")})
+        j5 = r.json()
+        for _ in range(100):
+            if j5["status"] not in ("queued", "running"):
+                break
+            time.sleep(0.05)
+            j5 = client.get(f"/jobs/{j5['id']}").json()
+        stored = json.loads(app_main.JOBS_STORE_PATH.read_text())[j5["id"]]
+        check(j5["status"] == "done" and j5["dsm_download"] is None and (j5.get("dsm_download_error") or "")
+              .startswith("could not keep") and stored.get("dsm_download_error") and "timings_s" in stored,
+              "same through wait=false: the background job finishes and is saved, the thread doesn't die")
 
     # A job left queued/running by a server restart is marked failed on startup
     import os

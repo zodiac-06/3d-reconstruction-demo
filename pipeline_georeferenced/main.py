@@ -419,16 +419,30 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
     except Exception as exc:
         _tick(timings, None)
         jobs[job_id].update(status="failed", error=str(exc))
-    if jobs[job_id]["status"] == "done":
-        jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
-        jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
-        _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
-    timings["total"] = round(time.perf_counter() - started, 2)
-    timings["queued"] = queued_s
-    jobs[job_id]["timings_s"] = timings
-
-    _save_jobs()
+    try:
+        if jobs[job_id]["status"] == "done":
+            jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
+            _keep_job_dsm(job_id)
+            _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
+    finally:
+        # Whatever went wrong above, the job's record reaches the store.
+        timings["total"] = round(time.perf_counter() - started, 2)
+        timings["queued"] = queued_s
+        jobs[job_id]["timings_s"] = timings
+        _save_jobs()
     return jobs[job_id]
+
+
+def _keep_job_dsm(job_id):
+    """_save_job_dsm, recording a failure on the job instead of raising: the
+    DSM itself was produced (and is in the viewers), only the kept, tagged
+    copy is missing, so the job stays "done" with the reason attached."""
+    try:
+        jobs[job_id]["dsm_download"] = _save_job_dsm(job_id, jobs[job_id]["metrics"])
+    except Exception as exc:
+        _dsm_path(job_id).unlink(missing_ok=True)  # no half-written copy behind a 200
+        jobs[job_id]["dsm_download"] = None
+        jobs[job_id]["dsm_download_error"] = f"could not keep this job's DSM: {exc}"
 
 
 def _snapshot_court_grid(bounds):
@@ -525,7 +539,8 @@ def download_dsm(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     if not _dsm_path(job_id).exists():
-        raise HTTPException(status_code=409, detail="No DSM kept for this job (failed, or run before downloads existed)")
+        raise HTTPException(status_code=409, detail=jobs[job_id].get("dsm_download_error")
+                            or "No DSM kept for this job (failed, or run before downloads existed)")
     return FileResponse(_dsm_path(job_id), media_type="image/tiff",
                         filename=f"depthwizard_dsm_{job_id[:8]}.tif")
 
