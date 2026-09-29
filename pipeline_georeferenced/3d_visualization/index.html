@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Vision2Scale — 3D Terrain Viewer</title>
+<title>DepthWizard — 3D Terrain Viewer</title>
 <style>
   :root {
     --panel-bg: rgba(15, 17, 21, 0.72);
@@ -36,12 +36,12 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   }
   #controls-panel {
-    top: 16px;
+    top: calc(var(--nav-h, 0px) + 16px);
     left: 16px;
     width: 240px;
   }
   #hint-panel {
-    top: 16px;
+    top: calc(var(--nav-h, 0px) + 16px);
     right: 16px;
     max-width: 260px;
     font-size: 12px;
@@ -147,8 +147,9 @@
     color: var(--text-dim);
   }
 </style>
+<script src="/site/nav.js" defer></script>
 </head>
-<body>
+<body data-nav="overlay">
 <canvas id="app-canvas"></canvas>
 
 <div id="controls-panel" class="panel">

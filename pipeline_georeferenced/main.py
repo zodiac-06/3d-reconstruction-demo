@@ -613,6 +613,7 @@ PUBLIC_FILES = {
     "dem_court/index.html",
     "validation/index.html", "validation/headline.js", "validation/icesat2_precomputed.json",
     "qgis_prep/data/geo_metadata.json",
+    "site/nav.js",
 }
 # (directory prefix, allowed extensions): the 3D viewer and its asset
 # folders (assets/, assets_bangalore/, ...), DEM Court's per-AOI grids

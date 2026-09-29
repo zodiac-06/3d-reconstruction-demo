@@ -24,6 +24,7 @@ SERVED = [
     "/leaflet_pitch/index.html", "/leaflet_pitch/",
     "/dem_court/index.html", "/dem_court/cache/testaoi/copernicus.f32",
     "/validation/index.html", "/validation/headline.js", "/validation/icesat2_precomputed.json",
+    "/site/nav.js",
     "/qgis_prep/data/geo_metadata.json",
 ]
 BLOCKED = [

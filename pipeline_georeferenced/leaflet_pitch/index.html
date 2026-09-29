@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Vision2Scale — AOI Context Map</title>
+<title>DepthWizard — AOI Context Map</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body { margin: 0; height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
-  #map { position: fixed; inset: 0; }
+  #map { position: fixed; inset: 0; top: var(--nav-h, 0px); }
   .panel {
-    position: fixed; z-index: 1000; top: 16px; left: 16px;
+    position: fixed; z-index: 1000; top: calc(var(--nav-h, 0px) + 16px); left: 16px;
     background: rgba(15, 17, 21, 0.85); border: 1px solid rgba(255,255,255,0.1);
     border-radius: 10px; padding: 14px 16px; color: #e8eaed;
     max-width: 320px; box-shadow: 0 4px 24px rgba(0,0,0,0.35);
@@ -27,8 +27,9 @@
   #open-3d.disabled { background: #444; color: #999; pointer-events: none; }
   #status { position: fixed; z-index: 1000; bottom: 16px; left: 16px; font-size: 12px; color: #ff6b6b; display: none; max-width: 420px; background: rgba(15,17,21,0.85); padding: 10px 14px; border-radius: 8px; }
 </style>
+<script src="/site/nav.js" defer></script>
 </head>
-<body>
+<body data-nav="overlay">
 <div id="map"></div>
 <div class="panel">
   <h1 id="aoi-title">AOI context map</h1>
@@ -45,7 +46,8 @@
     el.style.display = 'block';
   }
 
-  const map = L.map('map', { zoomControl: true }).setView([29.38, 79.46], 12);
+  const map = L.map('map', { zoomControl: false }).setView([29.38, 79.46], 12);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);  // top-left is under the info panel
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -79,7 +81,7 @@
       const fmt = (v, pos, neg) => `${Math.abs(v).toFixed(3)}°${v >= 0 ? pos : neg}`;
       const centre = `${fmt((b.south + b.north) / 2, 'N', 'S')}, ${fmt((b.west + b.east) / 2, 'E', 'W')}`;
       document.getElementById('aoi-title').textContent = `AOI at ${centre} — context map`;
-      document.title = `Vision2Scale — AOI at ${centre}`;
+      document.title = `DepthWizard — AOI at ${centre}`;
 
       const summary = document.getElementById('aoi-summary');
       summary.innerHTML =
