@@ -73,6 +73,9 @@
   // larger boxes were not measured, so they aren't offered. The server's own
   // limit is 0.5 degrees (main.py MAX_BOUNDS_SIDE_DEG).
   const MAX_SIDE_DEG = 0.10;
+  // Smallest box (degrees per side): below this a crop is only ~200 px across,
+  // too little for the depth model and DEM fusion to be meaningful.
+  const MIN_SIDE_DEG = 0.02;
   const POLL_MS = 2000;
 
   function showError(message) {
@@ -171,16 +174,19 @@
     }
     const dLon = box.east - box.west, dLat = box.north - box.south, km = sizeKm(box);
     const over = dLon > MAX_SIDE_DEG || dLat > MAX_SIDE_DEG;
-    boxInfo.classList.toggle('over', over);
+    const under = !over && (dLon < MIN_SIDE_DEG || dLat < MIN_SIDE_DEG);
+    const bad = over || under;
+    boxInfo.classList.toggle('over', bad);
     boxInfo.innerHTML = `<b>${km.w.toFixed(2)} × ${km.h.toFixed(2)} km</b> (${dLon.toFixed(4)}° × ${dLat.toFixed(4)}°)` +
-      (over ? `<br>Too large: at most ${MAX_SIDE_DEG}° per side, so processing stays under about a minute.` : '');
-    if (selRect) selRect.setStyle({ color: over ? '#ff6b6b' : '#ffd54f', fillColor: over ? '#ff6b6b' : '#ffd54f' });
+      (over ? `<br>Too large: at most ${MAX_SIDE_DEG}° per side, so processing stays under about a minute.` : '') +
+      (under ? `<br>Too small: at least ${MIN_SIDE_DEG} degrees per side` : '');
+    if (selRect) selRect.setStyle({ color: bad ? '#ff6b6b' : '#ffd54f', fillColor: bad ? '#ff6b6b' : '#ffd54f' });
     const aoi = precomputed && typeof matchPrecomputedAoi === 'function' ? matchPrecomputedAoi(box, precomputed) : null;
     accuracyNote.textContent = aoi
       ? `Overlaps ${aoi.name}: accuracy there was measured offline vs ICESat-2 (RMSE ${aoi.rmse_canopy_top_m} m vs canopy top, ` +
         `${aoi.rmse_ground_m} m vs ground), not for this exact box.`
       : 'Terrain from Copernicus DEM; accuracy not validated for this area.';
-    generateBtn.disabled = over || running;
+    generateBtn.disabled = bad || running;
   }
 
   function boxFrom(a, b) {

@@ -11,7 +11,8 @@ Checks:
 - Generate posts multipart west/south/east/north equal to the drawn box,
   the server receives the same bounds, polling shows "running" and reaches
   done, and the page navigates to the 3D viewer with ?job=<that job>;
-- a box over the 0.10 degree cap turns red, says why and disables Generate;
+- a box over the 0.10 degree cap or under the 0.02 degree minimum turns
+  red, says why and disables Generate; one just above the minimum doesn't;
 - a 400 shows the server's detail; a failed job shows the server's error;
   a 500 while polling is reported; Generate can't be submitted twice;
 - the accuracy note: a box matching Nainital names the precomputed result,
@@ -158,7 +159,10 @@ def main():
             page.click("#generate", force=True)  # second click while the first is running
             seen_running = False
             for _ in range(80):
-                txt = page.inner_text("#job-status") if "leaflet_pitch" in page.url else ""
+                try:  # short timeout: the page may navigate to the viewer mid-read
+                    txt = page.locator("#job-status").inner_text(timeout=500) if "leaflet_pitch" in page.url else ""
+                except Exception:
+                    txt = ""
                 seen_running |= txt.startswith("Running")
                 if "3d_visualization" in page.url:
                     break
@@ -192,6 +196,20 @@ def main():
                   f"oversize box is red and says why: {page.inner_text('#box-info')!r}")
             color = page.evaluate("selRect.options.color")
             check(color == "#ff6b6b", f"oversize rectangle drawn red ({color})")
+
+            # 2b. undersize box: below 0.02 deg per side, then one just above it
+            small = draw(page, 79.460, 29.380, 79.475, 29.410)["box"]  # 0.015 x 0.03 deg
+            check(small is not None and small["east"] - small["west"] < 0.02, f"undersize box drawn: {small}")
+            info = page.inner_text("#box-info")
+            check(page.is_disabled("#generate") and "Too small: at least 0.02 degrees per side" in info
+                  and "over" in (page.get_attribute("#box-info", "class") or ""),
+                  f"box narrower than 0.02 deg disables Generate and says why: {info!r}")
+            check(page.evaluate("selRect.options.color") == "#ff6b6b", "undersize rectangle drawn red")
+            okbox = draw(page, 79.460, 29.380, 79.485, 29.405)["box"]  # 0.025 x 0.025 deg
+            info = page.inner_text("#box-info")
+            check(okbox is not None and min(okbox["east"] - okbox["west"], okbox["north"] - okbox["south"]) >= 0.02
+                  and not page.is_disabled("#generate") and "Too small" not in info,
+                  f"box just above 0.02 deg enables Generate: {info!r}")
 
             # 3. accuracy note: Nainital's precomputed box vs a box elsewhere (Pune)
             draw(page, 79.42, 29.35, 79.51, 29.42)
