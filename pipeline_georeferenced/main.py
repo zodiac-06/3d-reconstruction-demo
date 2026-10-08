@@ -38,6 +38,7 @@ for, since it's CC BY-NC-SA 4.0 (non-commercial).
 """
 import importlib.util
 import json
+import math
 import os
 import shutil
 import sys
@@ -142,10 +143,24 @@ app.add_middleware(
 )
 
 
+def _json_safe(obj):
+    """A copy of obj with NaN / +-inf floats (Python or numpy) as None, through
+    nested dicts, lists and tuples. JSON has no NaN: FastAPI can't send one
+    (500) and a strict reader rejects a file that holds one. A metric can be
+    NaN legitimately, e.g. a correlation against a constant surface."""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, (float, np.floating)) and not math.isfinite(obj):
+        return None
+    return obj
+
+
 def _load_jobs():
     if JOBS_STORE_PATH.exists():
         with open(JOBS_STORE_PATH) as f:
-            return json.load(f)
+            return _json_safe(json.load(f))  # stores written before _json_safe can hold bare NaN
     return {}
 
 
@@ -164,7 +179,7 @@ def _save_jobs():
     with _JOBS_LOCK:
         tmp = JOBS_STORE_PATH.with_name(JOBS_STORE_PATH.name + ".tmp")
         with open(tmp, "w") as f:
-            json.dump(jobs, f, indent=2)
+            json.dump(_json_safe(jobs), f, indent=2, allow_nan=False)
         os.replace(tmp, JOBS_STORE_PATH)
 
 
@@ -436,7 +451,7 @@ def create_job(
 
     threading.Thread(target=run_background, name=f"job-{job_id[:8]}", daemon=True).start()
     with _JOBS_LOCK:
-        return dict(jobs[job_id])
+        return _json_safe(jobs[job_id])
 
 
 def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
@@ -448,7 +463,7 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
     started = time.perf_counter()
     result = error = None
     try:
-        jobs[job_id]["input"] = _prepare_cropped_input(mode, geotiff, bounds, timings)
+        jobs[job_id]["input"] = _json_safe(_prepare_cropped_input(mode, geotiff, bounds, timings))
         result = _run_pipeline(dem_source, sources, timings)
     except Exception as exc:
         _tick(timings, None)
@@ -458,8 +473,8 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
             # Still "running" to anyone polling until everything below is
             # recorded: a client that sees "done" gets the download link,
             # validation and timings with it.
-            jobs[job_id].update(**result)
-            jobs[job_id]["validation"] = _save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"])
+            jobs[job_id].update(**_json_safe(result))
+            jobs[job_id]["validation"] = _json_safe(_save_validation(job_id, jobs[job_id]["metrics"]["vertical_datum"]))
             _keep_job_dsm(job_id)
             _snapshot_court_grid(jobs[job_id].get("bounds_epsg4326"))
     finally:
@@ -474,7 +489,7 @@ def _run_job(job_id, mode, geotiff, bounds, dem_source, sources, queued_s):
             else:
                 jobs[job_id].update(status="failed", error=error)
             _save_jobs()
-    return jobs[job_id]
+    return _json_safe(jobs[job_id])
 
 
 def _keep_job_dsm(job_id):
@@ -551,7 +566,7 @@ def _save_validation(job_id, vertical_datum):
         return {"available": False,
                 "reason": "no ICESat-2 truth for this AOI's grid (see dsm_calibration/fetch_icesat2_truth.py)"}
     with open(_validation_path(job_id), "w") as f:
-        json.dump(evidence, f)
+        json.dump(_json_safe(evidence), f, allow_nan=False)
     return {"available": True, **{k: evidence[k] for k in
                                   ("source_run", "vertical_datum", "n_segments", "n_on_dsm", "stats")}}
 
@@ -574,7 +589,7 @@ def list_jobs():
                     "_order": order})
     # jobs from before created_at existed sort last
     out.sort(key=lambda j: (j["created_at"] or "", j.pop("_order")), reverse=True)
-    return out
+    return _json_safe(out)
 
 
 @app.get("/jobs/{job_id}/dsm.tif")
@@ -594,7 +609,7 @@ def get_job(job_id: str):
     with _JOBS_LOCK:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
-        return dict(jobs[job_id])
+        return _json_safe(jobs[job_id])
 
 
 @app.get("/jobs/{job_id}/validation")
@@ -607,7 +622,7 @@ def get_validation(job_id: str):
     if not summary.get("available") or not _validation_path(job_id).exists():
         raise HTTPException(status_code=409, detail=summary.get("reason", "Job has no validation evidence"))
     with open(_validation_path(job_id)) as f:
-        return dict(json.load(f), job_id=job_id)
+        return _json_safe(dict(json.load(f), job_id=job_id))
 
 
 @app.get("/jobs/{job_id}/dem-court")
