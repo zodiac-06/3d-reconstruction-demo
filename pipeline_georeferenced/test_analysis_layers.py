@@ -167,12 +167,12 @@ def test_js(spread, summary, prov_raw, prov_meta, prov_exp):
           import {{ readFileSync }} from 'node:fs';
           const L = await import({json.dumps((VIZ / 'layers.js').as_uri())});
           const P = await import({json.dumps((VIZ / 'elevation_probe.js').as_uri())});
-          const f32 = new Float32Array(readFileSync({json.dumps(str(t / 'spread.f32'))}).buffer.slice(0));
+          const f32 = (b => new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)))(readFileSync({json.dumps(str(t / 'spread.f32'))}));
           const spread = f32.map(v => v < 0 ? NaN : v);
           const conf = L.confidencePixels(spread, {json.dumps(summary['classes'])});
-          const prov = new Uint16Array(readFileSync({json.dumps(str(t / 'prov.u16'))}).buffer.slice(0));
+          const prov = (b => new Uint16Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)))(readFileSync({json.dumps(str(t / 'prov.u16'))}));
           const detail = L.decodeProvenance({{ data: prov }}, {json.dumps(prov_meta)});
-          const e = new Uint16Array(readFileSync({json.dumps(str(t / 'elev.u16'))}).buffer.slice(0));
+          const e = (b => new Uint16Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)))(readFileSync({json.dumps(str(t / 'elev.u16'))}));
           const meta = {json.dumps(meta)};
           const probe = P.createElevationProbe({{ width: {w}, height: {h}, data: e }}, meta);
           const m = L.measure(probe, meta, {{ col: 120, row: 600 }}, {{ col: 700, row: 150 }}, 50);
