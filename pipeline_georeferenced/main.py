@@ -316,6 +316,7 @@ def _run_pipeline(dem_source, sources, timings):
         satellite_path=str(CROPPED_PATH),
         assets_dir=str(VIZ_DIR / "assets"),
     )
+    _add_provenance_asset(VIZ_DIR / "assets", dem)
     _tick(timings, None)
 
     return dict(
@@ -341,6 +342,34 @@ def _run_pipeline(dem_source, sources, timings):
         },
         bounds_epsg4326=meta["bounds_epsg4326"],
     )
+
+
+def _add_provenance_asset(assets_dir, dem):
+    """Provenance view for the 3D viewer: which DEM every height comes from
+    (one source for the whole AOI -- the fallback chain picks per AOI) and
+    how much the Depth Anything detail layer moved each pixel (DSM - DEM).
+    The DEM is resampled onto the DSM's grid with the fusion's own function,
+    so DSM - DEM is exactly the detail that was added. Best effort: the
+    viewer just hides the view if this fails."""
+    import rasterio
+    from geotiff_to_viewer_assets import write_provenance_asset
+    from srtm_calibration import resample_srtm_to_grid
+
+    png = Path(assets_dir) / "provenance_16bit.png"
+    meta_path = Path(assets_dir) / "metadata.json"
+    try:
+        with rasterio.open(DSM_OUTPUT_PATH) as ds:
+            grid = (ds.transform, ds.crs, ds.shape)
+        dem_on_grid = resample_srtm_to_grid(str(TERRAIN_DEM_PATH), *grid)
+        prov = write_provenance_asset(str(DSM_OUTPUT_PATH), dem_on_grid, str(png))
+        prov.update(demSource=dem["source"], verticalDatum=dem["vertical_datum"],
+                    method="DSM = DEM + Depth Anything V2 detail layer (s = 1, 30 m high-pass)")
+    except Exception as exc:
+        png.unlink(missing_ok=True)  # never leave the previous job's layer behind
+        prov = {"error": f"provenance layer not produced: {exc}"}
+    meta = json.loads(meta_path.read_text())
+    meta["provenance"] = prov
+    meta_path.write_text(json.dumps(meta, indent=2))
 
 
 @app.post("/jobs")
@@ -602,17 +631,83 @@ def get_dem_court(job_id: str, fabdem: bool = False):
     return dict(manifest, job_id=job_id)
 
 
+def _job_bbox(job_id):
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "done" or not job.get("bounds_epsg4326"):
+        raise HTTPException(status_code=409, detail="Job has no finished AOI")
+    b = job["bounds_epsg4326"]
+    return (b["west"], b["south"], b["east"], b["north"])
+
+
+def _job_confidence(job_id, compute):
+    """(manifest, cache_dir, spread, members). With compute=False only an
+    already-built DEM Court cache is used (a 409 says how to build it), so a
+    page can check for confidence without triggering minutes of DEM fetches."""
+    bbox = _job_bbox(job_id)
+    cache = Path(dem_court_mod.CACHE_ROOT) / dem_court_mod.aoi_key(bbox)
+    if not compute and not (cache / "court.json").exists():
+        raise HTTPException(status_code=409, detail="Confidence not computed yet for this AOI: it needs "
+                            "every DEM source fetched (open DEM Court, or ask for ?compute=true).")
+    try:
+        if compute:
+            manifest, cache_dir = dem_court_mod.build_court(
+                bbox, fetch_srtm_mod, current_crop=str(CROPPED_PATH), icesat_dirs=_truth_dirs())
+        else:  # the cached court as it is: never re-fetch a source that failed
+            manifest, cache_dir = json.loads((cache / "court.json").read_text()), cache
+        spread, members = dem_court_mod.confidence_spread(cache_dir, manifest)
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return manifest, cache_dir, spread, members
+
+
+@app.get("/jobs/{job_id}/confidence")
+def get_confidence(job_id: str, compute: bool = False):
+    """Per-pixel confidence for the job's AOI: the spread between independent
+    DEMs (see dem_court/court.py). The spread raster is served at
+    spread_url (float32, row-major, NaN = fewer than two DEMs)."""
+    manifest, _, spread, members = _job_confidence(job_id, compute)
+    return {"job_id": job_id, "grid": manifest["grid"], "target_datum": manifest["target_datum"],
+            "spread_url": manifest["cache_url"] + "spread.f32",
+            "geotiff_url": f"/jobs/{job_id}/confidence.tif",
+            **dem_court_mod.confidence_summary(spread, members)}
+
+
+@app.get("/jobs/{job_id}/confidence.tif")
+def download_confidence(job_id: str, compute: bool = False):
+    """The confidence raster as a GeoTIFF on the job's grid: DEM spread in
+    metres (lower = more confident), NaN where fewer than two DEMs."""
+    import rasterio
+
+    manifest, cache_dir, spread, members = _job_confidence(job_id, compute)
+    path = BASE_DIR / JOBS_DIR_NAME / f"{job_id}_confidence.tif"
+    with rasterio.open(Path(cache_dir) / "grid.tif") as g:
+        profile = dict(driver="GTiff", crs=g.crs, transform=g.transform, width=g.width, height=g.height,
+                       count=1, dtype="float32", nodata=float("nan"), compress="deflate")
+    with rasterio.open(path, "w", **profile) as ds:
+        ds.write(spread.astype(np.float32), 1)
+        ds.set_band_description(1, "DEM spread, max - min (m, EGM2008): lower = more confident")
+        ds.update_tags(UNITS="metre", MEASURE="max - min height across independent DEMs",
+                       SOURCES=",".join(members), VERTICAL_DATUM=manifest["target_datum"],
+                       CLASSES="; ".join(f"{c['name']} <= {c['max_m']} m" if c["max_m"] else f"{c['name']} above"
+                                         for c in dem_court_mod.confidence_summary(spread, members)["classes"]),
+                       PRODUCER="DepthWizard georeferenced pipeline", JOB_ID=job_id)
+    return FileResponse(path, media_type="image/tiff", filename=f"depthwizard_confidence_{job_id[:8]}.tif")
+
+
 # The pages use paths like ../qgis_prep/data/geo_metadata.json and
 # ../3d_visualization/index.html, so this directory stays mounted as one
 # static root -- but only the files the pages load are served. The folder
 # also holds the source, the job store, uploaded/fetched GeoTIFFs, lidar
 # truth and model weights, none of which should be public on the demo URL.
 PUBLIC_FILES = {
-    "index.html", "history.html",
+    "index.html", "history.html", "dashboard.html",
     "3d_visualization/index.html", "leaflet_pitch/index.html",
     "dem_court/index.html",
     "validation/index.html", "validation/headline.js", "validation/icesat2_precomputed.json",
     "qgis_prep/data/geo_metadata.json",
+    "site/nav.js",
 }
 # (directory prefix, allowed extensions): the 3D viewer and its asset
 # folders (assets/, assets_bangalore/, ...), DEM Court's per-AOI grids

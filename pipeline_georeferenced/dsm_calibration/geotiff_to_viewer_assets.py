@@ -64,6 +64,28 @@ def georeference_metadata(dsm_path):
         }
 
 
+def write_provenance_asset(dsm_path, dem_on_grid, out_png_path):
+    """The Depth Anything contribution per pixel, DSM - DEM (the detail
+    layer the fusion added), as a 16-bit PNG for the 3D viewer's provenance
+    view. Value 0 marks pixels with no DSM or no DEM; 1..65535 map linearly
+    onto [detailMin, detailMax] metres. dem_on_grid must be the DEM exactly
+    as the fusion resampled it onto the DSM's grid."""
+    with rasterio.open(dsm_path) as ds:
+        dsm = ds.read(1, masked=True).astype(np.float64).filled(np.nan)
+    if dem_on_grid.shape != dsm.shape:
+        raise ValueError(f"DEM grid {dem_on_grid.shape} doesn't match DSM {dsm.shape}")
+    detail = dsm - dem_on_grid
+    valid = np.isfinite(detail)
+    if not valid.any():
+        raise ValueError("no pixel has both a DSM and a DEM height")
+    lo, hi = float(detail[valid].min()), float(detail[valid].max())
+    scaled = np.zeros(detail.shape, np.uint16)
+    scaled[valid] = np.clip(np.rint(1 + (detail[valid] - lo) / max(hi - lo, 1e-9) * 65534), 1, 65535)
+    Image.fromarray(scaled, mode="I;16").save(out_png_path)
+    return {"detailMin": lo, "detailMax": hi, "nodataValue": 0,
+            "detailStd": float(detail[valid].std()), "noDataPixels": int((~valid).sum())}
+
+
 def convert_satellite(geotiff_path, out_jpg_path):
     with rasterio.open(geotiff_path) as ds:
         arr = ds.read()  # (bands, H, W)

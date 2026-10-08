@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Vision2Scale — 3D Terrain Viewer</title>
+<title>DepthWizard — 3D Terrain Viewer</title>
 <style>
   :root {
     --panel-bg: rgba(15, 17, 21, 0.72);
@@ -36,12 +36,12 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   }
   #controls-panel {
-    top: 16px;
+    top: calc(var(--nav-h, 0px) + 16px);
     left: 16px;
     width: 240px;
   }
   #hint-panel {
-    top: 16px;
+    top: calc(var(--nav-h, 0px) + 16px);
     right: 16px;
     max-width: 260px;
     font-size: 12px;
@@ -146,9 +146,49 @@
     font-size: 11px;
     color: var(--text-dim);
   }
+  #mode-legend .chips { display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; color: var(--text); }
+  #mode-legend .chip { display: flex; align-items: center; gap: 6px; }
+  #mode-legend .chip i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  #mode-legend .chip b { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #layer-note { margin-top: 8px; font-size: 11px; color: var(--text-dim); line-height: 1.45; }
+  #layer-note button, #measure-btn {
+    margin-top: 6px; width: 100%; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--panel-border);
+    background: rgba(79,195,247,0.12); color: var(--accent); font-weight: 600; font-size: 12px; cursor: pointer;
+  }
+  #measure-btn { margin-top: 16px; font-size: 13px; padding: 9px 10px; }
+  #measure-btn.active { background: var(--accent); color: #0b0c10; }
+  #measure-panel {
+    bottom: 16px; left: 16px; width: 300px; font-size: 12px; line-height: 1.6; display: none;
+  }
+  #measure-panel .row { display: flex; justify-content: space-between; gap: 8px; }
+  #measure-panel .row span:first-child { color: var(--text-dim); }
+  #measure-panel .row span:last-child { font-variant-numeric: tabular-nums; }
+  #measure-panel .big { font-size: 20px; font-weight: 700; color: var(--accent); }
+  #measure-panel svg { width: 100%; height: 90px; display: block; margin-top: 6px; }
+  #measure-panel .dim { color: var(--text-dim); }
+  /* In the dashboard's frame the dashboard's chips pick the mode and start
+     measuring, so the panel keeps only the exaggeration slider and the legend. */
+  body.embed #hint-panel, body.embed #controls-panel h2, body.embed #mode-toggle,
+  body.embed .mode-row > label, body.embed #mode-select, body.embed #measure-btn { display: none; }
+  body.embed #controls-panel { width: 210px; padding: 10px 12px; top: 10px; left: 10px; }
+  body.embed #controls-panel .slider-row:first-of-type { margin-top: 0; }
+  body.embed #probe-panel { width: 220px; bottom: 10px; right: 10px; }
+  body.embed #probe-panel .note { display: none; }
+  body.embed #measure-panel { bottom: 10px; left: 10px; width: 270px; }
+  @media (max-width: 560px) {
+    body.embed #controls-panel { width: 160px; font-size: 11px; }
+    body.embed #probe-panel { display: none; }
+    body.embed #measure-panel { width: auto; right: 10px; }
+  }
+  @media (max-width: 720px) {
+    #hint-panel { display: none; }
+    #controls-panel { width: 200px; }
+    #probe-panel, #measure-panel { width: auto; left: 16px; right: 16px; }
+  }
 </style>
+<script src="/site/nav.js" defer></script>
 </head>
-<body>
+<body data-nav="overlay">
 <canvas id="app-canvas"></canvas>
 
 <div id="controls-panel" class="panel">
@@ -168,7 +208,10 @@
       <option value="elevation">Elevation heatmap</option>
       <option value="hillshade">Hillshade</option>
       <option value="slope">Slope map (30 m-scale)</option>
+      <option value="confidence">Confidence (DEM agreement)</option>
+      <option value="provenance">Provenance (source + AI detail)</option>
     </select>
+    <div id="layer-note"></div>
   </div>
   <div class="slider-row" id="opacity-row" style="display:none">
     <label for="opacity-slider">
@@ -178,10 +221,12 @@
     <input id="opacity-slider" type="range" min="0" max="100" step="5" value="70" />
   </div>
   <div id="mode-legend">
+    <div class="chips" id="legend-chips"></div>
     <div class="ramp" id="legend-ramp"></div>
     <div class="ends"><span id="legend-lo"></span><span id="legend-hi"></span></div>
     <div id="legend-note"></div>
   </div>
+  <button id="measure-btn" type="button">Measure distance &amp; profile</button>
 </div>
 
 <div id="hint-panel" class="panel">
@@ -189,6 +234,7 @@
   <div><strong>Orbit:</strong> Left-drag to rotate, scroll to zoom, right-drag to pan.</div>
   <div style="margin-top:6px;"><strong>Fly:</strong> WASD to move, drag mouse to look, Q/E to roll.</div>
   <div style="margin-top:6px;"><strong>Probe:</strong> click the terrain for lat/lon, elevation and slope.</div>
+  <div style="margin-top:6px;"><strong>Measure:</strong> press Measure, then click two points.</div>
 </div>
 
 <div id="probe-panel" class="panel">
@@ -201,6 +247,21 @@
     <div class="row"><span>Pixel (col, row)</span><span id="probe-pixel"></span></div>
     <div class="note">Elevation is read from the 16-bit DSM, not the mesh, so it doesn't change with
       vertical exaggeration. Slope is a central difference over &plusmn;30 m, the terrain DEM's posting.</div>
+  </div>
+</div>
+
+<div id="measure-panel" class="panel">
+  <h2>Measure</h2>
+  <div id="measure-help" class="dim">Click the first point on the terrain.</div>
+  <div id="measure-values" style="display:none">
+    <div class="row"><span>Horizontal distance</span><span class="big" id="m-dist"></span></div>
+    <div class="row"><span>Height difference (B − A)</span><span id="m-dh"></span></div>
+    <div class="row"><span>Slope distance</span><span id="m-slope"></span></div>
+    <div class="row"><span>Average grade</span><span id="m-grade"></span></div>
+    <div class="row"><span>Total climb / descent</span><span id="m-climb"></span></div>
+    <div class="row"><span>A → B heights</span><span id="m-ends"></span></div>
+    <svg id="m-profile" viewBox="0 0 300 90" preserveAspectRatio="none" aria-label="Elevation profile A to B"></svg>
+    <div class="dim" style="font-size:11px">Elevation profile along the line, from the DSM (not the exaggerated mesh). Click again to start a new line.</div>
   </div>
 </div>
 
@@ -221,6 +282,13 @@
   import { setupNavigation } from './controls.js';
   import { decodeGray16Png, createElevationProbe, intersectHeightfield } from './elevation_probe.js';
   import { computeGradients, renderMode, RAMPS, SLOPE_MAX_DEG, SUN_AZIMUTH_DEG, SUN_ALTITUDE_DEG } from './render_modes.js';
+  import { confidencePixels, CONFIDENCE_COLORS, decodeProvenance, symmetricRange, provenancePixels,
+           PROVENANCE_RAMP, NO_DATA_COLOR, measure } from './layers.js';
+
+  const params = new URLSearchParams(window.location.search);
+  const DEM_NAMES = { copernicus: 'Copernicus GLO-30', srtm: 'SRTM', nasadem: 'NASADEM', fabdem: 'FABDEM' };
+  // ?embed=1: inside the dashboard's frame -- no top bar, no controls help.
+  if (params.get('embed') === '1') document.body.classList.add('embed');
 
   const canvas = document.getElementById('app-canvas');
   const modeToggle = document.getElementById('mode-toggle');
@@ -347,7 +415,8 @@
     downAt = null;
     if (moved > 4) return;
     const p = probeAtClient(e.clientX, e.clientY);
-    if (p) showProbe(p);
+    if (!p) return;
+    if (measuring) addMeasurePoint(p); else showProbe(p);
   });
 
   exaggerationSlider.addEventListener('input', () => {
@@ -355,7 +424,90 @@
     exaggerationValue.textContent = `${factor.toFixed(1)}x`;
     if (terrain) terrain.setVerticalExaggeration(factor);
     placeMarker();
+    drawMeasure();
   });
+
+  // ----- Measure: two clicks -> distance, height difference, profile -----
+  const measureBtn = document.getElementById('measure-btn');
+  const measurePanel = document.getElementById('measure-panel');
+  let measuring = false, measurePts = [], measureResult = null;
+  const mMarkers = [0x66bb6a, 0xffa726].map(color => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1.4, 16, 12), new THREE.MeshBasicMaterial({ color }));
+    m.visible = false; scene.add(m); return m;
+  });
+  const mLine = new THREE.Line(new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0xffeb3b, depthTest: false, transparent: true }));
+  mLine.renderOrder = 10; mLine.visible = false; scene.add(mLine);
+
+  // A continuous pixel position -> a point just above the displaced surface.
+  function surfacePoint(col, row, lift = 0.4) {
+    return new THREE.Vector3(
+      ((col + 0.5) / probe.width - 0.5) * terrain.planeWidth,
+      terrain.getDisplacementScale() * probe.normalizedBilinear(col, row) + lift,
+      ((row + 0.5) / probe.height - 0.5) * terrain.planeHeight
+    ).applyMatrix4(terrain.mesh.matrixWorld);
+  }
+
+  function setMeasuring(on) {
+    measuring = on;
+    measureBtn.classList.toggle('active', on);
+    measureBtn.textContent = on ? 'Stop measuring' : 'Measure distance & profile';
+    measurePanel.style.display = on || measureResult ? 'block' : 'none';
+    if (on && !measurePts.length) document.getElementById('measure-help').textContent = 'Click the first point on the terrain.';
+  }
+  measureBtn.addEventListener('click', () => setMeasuring(!measuring));
+
+  function addMeasurePoint(p) {
+    if (measurePts.length === 2) { measurePts = []; measureResult = null; }
+    measurePts.push({ col: p.col, row: p.row });
+    const help = document.getElementById('measure-help');
+    if (measurePts.length === 1) {
+      document.getElementById('measure-values').style.display = 'none';
+      help.style.display = 'block';
+      help.textContent = `A: ${p.elevationM.toFixed(1)} m. Now click the second point.`;
+    } else {
+      measureResult = measure(probe, terrain.metadata, measurePts[0], measurePts[1]);
+      if (!measureResult) { help.textContent = 'Measuring needs the DSM\'s pixel size (metadata.json has no crs/bounds).'; return; }
+      help.style.display = 'none';
+      showMeasure(measureResult);
+    }
+    drawMeasure();
+  }
+
+  const fmtLen = m => (Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(0)} m`);
+  function showMeasure(r) {
+    document.getElementById('measure-values').style.display = 'block';
+    document.getElementById('m-dist').textContent = fmtLen(r.horizontalM);
+    document.getElementById('m-dh').textContent = `${r.dh >= 0 ? '+' : ''}${r.dh.toFixed(1)} m`;
+    document.getElementById('m-slope').textContent = fmtLen(r.slopeDistM);
+    document.getElementById('m-grade').textContent =
+      r.gradePct === null ? 'n/a' : `${r.gradePct.toFixed(1)}% (${r.angleDeg.toFixed(1)}°)`;
+    document.getElementById('m-climb').textContent = `+${r.climb.toFixed(0)} m / −${r.descent.toFixed(0)} m`;
+    document.getElementById('m-ends').textContent = `${r.za.toFixed(0)} → ${r.zb.toFixed(0)} m`;
+    const W = 300, H = 90, pad = 4, gut = 40, span = Math.max(r.maxZ - r.minZ, 1);
+    const pts = r.profile.map(p => `${(gut + p.t * (W - gut - pad)).toFixed(1)},${(H - pad - (p.z - r.minZ) / span * (H - 2 * pad)).toFixed(1)}`);
+    document.getElementById('m-profile').innerHTML =
+      `<polygon points="${gut},${H - pad} ${pts.join(' ')} ${W - pad},${H - pad}" fill="rgba(79,195,247,0.18)" />` +
+      `<polyline points="${pts.join(' ')}" fill="none" stroke="#4fc3f7" stroke-width="1.5" vector-effect="non-scaling-stroke" />` +
+      `<text x="${pad}" y="11" fill="#9aa0a6" font-size="10">${r.maxZ.toFixed(0)} m</text>` +
+      `<text x="${pad}" y="${H - 6}" fill="#9aa0a6" font-size="10">${r.minZ.toFixed(0)} m</text>` +
+      `<text x="${W - pad}" y="11" fill="#9aa0a6" font-size="10" text-anchor="end">${fmtLen(r.horizontalM)}</text>`;
+  }
+
+  function drawMeasure() {
+    if (!terrain || !probe) return;
+    mMarkers.forEach((m, i) => {
+      const p = measurePts[i];
+      m.visible = Boolean(p);
+      if (p) m.position.copy(surfacePoint(p.col, p.row, 0));
+    });
+    mLine.visible = Boolean(measureResult);
+    if (measureResult) {
+      const pos = measureResult.profile.map(p => surfacePoint(p.col, p.row));
+      mLine.geometry.dispose();
+      mLine.geometry = new THREE.BufferGeometry().setFromPoints(pos);
+    }
+  }
 
   // ----- Render modes: an overlay computed from the 16-bit DSM, blended
   // over the satellite image at the chosen opacity -----
@@ -367,6 +519,40 @@
   function showLegend(mode) {
     const legend = document.getElementById('mode-legend');
     legend.style.display = mode === 'satellite' ? 'none' : 'block';
+    const chips = document.getElementById('legend-chips');
+    chips.innerHTML = '';
+    chips.style.display = 'none';
+    document.getElementById('legend-ramp').style.display = 'block';
+    document.querySelector('#mode-legend .ends').style.display = 'flex';
+    if (mode === 'confidence' && layers.confidence) {
+      const c = layers.confidence.summary;
+      chips.style.display = 'flex';
+      document.getElementById('legend-ramp').style.display = 'none';
+      document.querySelector('#mode-legend .ends').style.display = 'none';
+      chips.innerHTML = c.classes.map(k => {
+        const label = k.max_m === null ? `> ${k.min_m} m` : `${k.min_m ? `${k.min_m}–` : '≤ '}${k.max_m} m`;
+        return `<div class="chip"><i style="background:${CONFIDENCE_COLORS[k.name]}"></i>${k.name} (${label})` +
+          `<b>${k.fraction === null ? '—' : (k.fraction * 100).toFixed(0) + '%'}</b></div>`;
+      }).join('');
+      document.getElementById('legend-note').textContent =
+        `Spread (max − min) between ${c.sources.map(x => DEM_NAMES[x] || x).join(', ')} in one datum (EGM2008). ` +
+        `Where independent DEMs agree, the height is well constrained. It is agreement, not an error bar.`;
+      return;
+    }
+    if (mode === 'provenance' && layers.provenance) {
+      const p = layers.provenance;
+      document.getElementById('legend-ramp').style.background = `linear-gradient(90deg, ${PROVENANCE_RAMP.join(', ')})`;
+      document.getElementById('legend-lo').textContent = `−${p.range} m`;
+      document.getElementById('legend-hi').textContent = `+${p.range} m`;
+      const src = DEM_NAMES[p.meta.demSource] || p.meta.demSource;
+      chips.style.display = 'flex';
+      chips.innerHTML = `<div class="chip"><i style="background:#f7f7f7"></i>Base height: ${src} (${p.meta.verticalDatum}), every pixel</div>` +
+        (p.meta.noDataPixels ? `<div class="chip"><i style="background:${NO_DATA_COLOR}"></i>No DEM / DSM<b>${p.meta.noDataPixels} px</b></div>` : '');
+      document.getElementById('legend-note').textContent =
+        `Colour: how much the Depth Anything V2 detail layer moved each height (DSM − DEM); ` +
+        `blue lowered, red raised. Detail std ${p.meta.detailStd.toFixed(2)} m.`;
+      return;
+    }
     const ramp = mode === 'hillshade' ? ['#000000', '#ffffff'] : RAMPS[mode];
     if (!ramp) return;
     document.getElementById('legend-ramp').style.background = `linear-gradient(90deg, ${ramp.join(', ')})`;
@@ -384,14 +570,27 @@
   function applyMode() {
     if (!terrain || !probe) return;
     const mode = modeSelect.value;
+    updateLayerNote(mode);
+    if ((mode === 'confidence' && !layers.confidence) || (mode === 'provenance' && !layers.provenance)) {
+      terrain.setMap(terrain.satelliteTexture);
+      document.getElementById('mode-legend').style.display = 'none';
+      document.getElementById('opacity-row').style.display = 'none';
+      return;
+    }
     document.getElementById('opacity-row').style.display = mode === 'satellite' ? 'none' : 'block';
     if (mode === 'satellite') {
       terrain.setMap(terrain.satelliteTexture);
       showLegend(mode);
       return;
     }
-    if (mode !== 'elevation' && !gradients) gradients = computeGradients(probe);
-    if (!(mode in overlays)) overlays[mode] = renderMode(mode, probe, gradients);
+    if (mode === 'confidence') overlays[mode] = overlays[mode] ||
+      confidencePixels(layers.confidence.spread, layers.confidence.summary.classes);
+    else if (mode === 'provenance') overlays[mode] = overlays[mode] ||
+      provenancePixels(layers.provenance.detail, layers.provenance.range);
+    else {
+      if (mode !== 'elevation' && !gradients) gradients = computeGradients(probe);
+      if (!(mode in overlays)) overlays[mode] = renderMode(mode, probe, gradients);
+    }
     const pixels = overlays[mode];
     if (!pixels) {
       showError('This mode needs the DSM\'s pixel size, which metadata.json does not give (no crs/bounds).');
@@ -422,6 +621,96 @@
     applyMode();
   });
 
+  // ----- Confidence and provenance: loaded after the terrain, when available -----
+  const layers = { confidence: null, provenance: null };
+  const layerState = { confidence: 'Checking…', provenance: 'Checking…' };
+  let confidenceJob = null;
+
+  function updateLayerNote(mode) {
+    const note = document.getElementById('layer-note');
+    note.innerHTML = '';
+    if (!(mode in layers) || layers[mode]) return;
+    note.textContent = layerState[mode];
+    if (mode === 'confidence' && confidenceJob && layerState.confidence.startsWith('Not computed')) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Compute now (fetches SRTM + NASADEM, ~1 min)';
+      btn.onclick = () => loadConfidence(true);
+      note.appendChild(btn);
+    }
+  }
+
+  function setOptionLabel(value, suffix) {
+    const opt = modeSelect.querySelector(`option[value="${value}"]`);
+    opt.textContent = opt.textContent.replace(/ ·.*$/, '') + (suffix ? ` · ${suffix}` : '');
+  }
+
+  async function loadProvenance() {
+    const prov = terrain.metadata.provenance;
+    if (!prov || prov.error) {
+      layerState.provenance = prov && prov.error ? `Not available: ${prov.error}`
+        : 'Not available for this terrain: run a job to generate the provenance layer.';
+      setOptionLabel('provenance', 'n/a');
+      return;
+    }
+    const res = await fetch(`./${assetsDir}/provenance_16bit.png`);
+    if (!res.ok) throw new Error(`provenance_16bit.png: ${res.status}`);
+    const grid = await decodeGray16Png(await res.arrayBuffer());
+    if (grid.width !== probe.width || grid.height !== probe.height) throw new Error('provenance grid differs from the DSM');
+    const detail = decodeProvenance(grid, prov);
+    layers.provenance = { meta: prov, detail, range: symmetricRange(detail) };
+    setOptionLabel('provenance', '');
+  }
+
+  // Which finished job is this terrain? ?job=, else the newest done job
+  // whose AOI is the one loaded (the viewer shows the latest job's output).
+  async function findJob() {
+    if (params.get('job')) return params.get('job');
+    const list = await (await fetch('/jobs')).json();
+    const b = terrain.metadata.boundsEPSG4326;
+    const same = j => j.bounds_epsg4326 && b && ['west', 'south', 'east', 'north']
+      .every(k => Math.abs(j.bounds_epsg4326[k] - b[k]) < 1e-6);
+    const job = Array.isArray(list) && list.find(j => j.status === 'done' && same(j));
+    return job ? job.id : null;
+  }
+
+  async function loadConfidence(compute = false) {
+    if (!confidenceJob) {
+      layerState.confidence = 'Not available: no finished job matches the terrain loaded here.';
+      setOptionLabel('confidence', 'n/a');
+      return;
+    }
+    if (compute) { layerState.confidence = 'Fetching every DEM source and comparing… this can take a minute.'; updateLayerNote(modeSelect.value); }
+    const res = await fetch(`/jobs/${encodeURIComponent(confidenceJob)}/confidence${compute ? '?compute=true' : ''}`);
+    const body = await res.json();
+    if (!res.ok) {
+      layerState.confidence = res.status === 409 && !compute && /not computed/i.test(body.detail)
+        ? 'Not computed yet for this AOI.' : `Not available: ${body.detail || res.statusText}`;
+      setOptionLabel('confidence', res.status === 409 && !compute ? 'compute' : 'n/a');
+      updateLayerNote(modeSelect.value);
+      return;
+    }
+    if (body.grid.width !== probe.width || body.grid.height !== probe.height) {
+      layerState.confidence = 'Not available: the DEM Court grid differs from this DSM.';
+      setOptionLabel('confidence', 'n/a');
+      return;
+    }
+    const spread = new Float32Array(await (await fetch(body.spread_url)).arrayBuffer());
+    layers.confidence = { summary: body, spread };
+    delete overlays.confidence;
+    setOptionLabel('confidence', '');
+    applyMode();
+  }
+
+  async function loadLayers() {
+    await loadProvenance().catch(err => { layerState.provenance = `Not available: ${err.message}`; setOptionLabel('provenance', 'n/a'); });
+    try { confidenceJob = await findJob(); } catch { confidenceJob = null; }
+    await loadConfidence().catch(err => { layerState.confidence = `Not available: ${err.message}`; setOptionLabel('confidence', 'n/a'); });
+    window.viewerLayers = { layers, layerState, confidenceJob };
+    if (params.get('mode')) { modeSelect.value = params.get('mode'); }
+    applyMode();
+    if (params.get('measure') === '1') setMeasuring(true);
+  }
+
   // Handle for scripted checks (dsm_calibration/test_viewer_probe.py): where
   // a DSM pixel sits on screen at the current exaggeration.
   window.viewerProbe = {
@@ -436,6 +725,12 @@
       return { x: rect.left + (v.x + 1) / 2 * rect.width, y: rect.top + (1 - v.y) / 2 * rect.height };
     },
     isReady: () => Boolean(terrain && probe),
+    layersReady: () => Boolean(window.viewerLayers),
+    measureBetween(a, b) {
+      setMeasuring(true); measurePts = []; measureResult = null;
+      addMeasurePoint(probe.probePixel(a.col, a.row)); addMeasurePoint(probe.probePixel(b.col, b.row));
+      return measureResult;
+    },
     // the composited texture currently draped (null in satellite mode)
     modePixel(col, row) {
       if (modeSelect.value === 'satellite' || !modeCanvas) return null;
@@ -469,6 +764,7 @@
       const pngResponse = await fetch(`./${assetsDir}/elevation_16bit.png`);
       if (!pngResponse.ok) throw new Error(`elevation_16bit.png: ${pngResponse.status}`);
       probe = createElevationProbe(await decodeGray16Png(await pngResponse.arrayBuffer()), terrain.metadata);
+      loadLayers();
     } catch (err) {
       console.error(err);
       showError(`Failed to load terrain assets: ${err.message}`);

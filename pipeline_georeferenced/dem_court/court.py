@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -276,3 +277,46 @@ def _finish(manifest, include_fabdem):
     manifest["compare"] = manifest["stats"]["with_fabdem" if include_fabdem and "with_fabdem" in manifest["stats"]
                                             else "without_fabdem"]
     return manifest
+
+
+# --- Confidence: how far the independent DEMs disagree at each pixel ---
+# The spread (max - min, EGM2008) across Copernicus / SRTM / NASADEM. Where
+# independent DEMs agree, the terrain height the DSM is built on is well
+# constrained; where they disagree (steep slopes, forest, voids), it isn't.
+# It is an agreement measure, not an error bar: DEMs can agree and all be
+# wrong (e.g. the same canopy bias). FABDEM is never included (bare earth
+# by design, so it disagrees under canopy for a known reason).
+CONFIDENCE_SOURCES = ALWAYS
+CONFIDENCE_CLASSES = (  # (name, upper bound of spread in metres)
+    ("high", AGREE_THRESHOLD_M),
+    ("medium", 2 * AGREE_THRESHOLD_M),
+    ("low", float("inf")),
+)
+
+
+def confidence_spread(cache, manifest):
+    """Per-pixel spread (m) across the available CONFIDENCE_SOURCES, NaN
+    where fewer than two have data. Writes <cache>/spread.f32 for the viewer."""
+    members = [s for s in CONFIDENCE_SOURCES if manifest["sources"].get(s, {}).get("available")]
+    if len(members) < 2:
+        raise LookupError(f"Confidence needs at least two DEMs; available: {members or 'none'}")
+    stack = np.stack([_load(cache, manifest, s) for s in members])
+    ok = np.sum(np.isfinite(stack), axis=0) >= 2
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns
+        spread = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
+    spread[~ok] = np.nan
+    _write_f32(os.path.join(cache, "spread.f32"), spread)
+    return spread, members
+
+
+def confidence_summary(spread, members):
+    finite = spread[np.isfinite(spread)]
+    lo, classes = 0.0, []
+    for name, hi in CONFIDENCE_CLASSES:  # (lo, hi]; the first class includes 0
+        in_class = ((finite > lo) if lo else (finite >= lo)) & (finite <= hi)
+        frac = float(np.mean(in_class)) if finite.size else None
+        classes.append({"name": name, "min_m": lo, "max_m": None if hi == float("inf") else hi, "fraction": frac})
+        lo = hi
+    return {"sources": members, "measure": "spread_m", "classes": classes,
+            "spread": _stats(spread), "n_pixels": int(spread.size), "n_scored": int(finite.size)}

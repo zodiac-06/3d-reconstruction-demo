@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Vision2Scale — Job History</title>
+<title>DepthWizard — Job History</title>
 <style>
   html, body { margin: 0; min-height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #e8eaed; }
-  .wrap { max-width: 1200px; margin: 40px auto; padding: 0 16px; }
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
   h1 { font-size: 20px; margin-bottom: 4px; }
   .subtitle { color: #9aa0a6; font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
   .subtitle a, td a { color: #4fc3f7; }
@@ -29,13 +29,14 @@
   #empty, #error { padding: 24px; color: #9aa0a6; }
   #error { color: #ff6b6b; }
 </style>
+<script src="/site/nav.js" defer></script>
 </head>
 <body>
 <div class="wrap">
   <h1>Job history</h1>
   <div class="subtitle">Every processed AOI, newest first. Each finished job keeps its own DSM GeoTIFF, tagged with units,
     vertical datum and DEM source. The 3D viewer and 2D map show only the latest job's output, so they're linked for that job only.
-    <a href="/index.html">← New analysis</a></div>
+    </div>
   <div class="panel">
     <table id="jobs" style="display:none">
       <thead><tr><th>When (UTC)</th><th>Status</th><th>Input</th><th>AOI (W, S, E, N)</th><th>DEM</th>

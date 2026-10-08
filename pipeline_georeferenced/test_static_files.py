@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 SERVED = [
-    "/", "/index.html", "/history.html",
+    "/", "/index.html", "/history.html", "/dashboard.html", "/3d_visualization/layers.js",
     "/3d_visualization/", "/3d_visualization/index.html", "/3d_visualization/terrain.js",
     "/3d_visualization/controls.js", "/3d_visualization/elevation_probe.js", "/3d_visualization/render_modes.js",
     "/3d_visualization/assets/elevation_16bit.png", "/3d_visualization/assets/satellite.jpg",
@@ -24,6 +24,7 @@ SERVED = [
     "/leaflet_pitch/index.html", "/leaflet_pitch/",
     "/dem_court/index.html", "/dem_court/cache/testaoi/copernicus.f32",
     "/validation/index.html", "/validation/headline.js", "/validation/icesat2_precomputed.json",
+    "/site/nav.js",
     "/qgis_prep/data/geo_metadata.json",
 ]
 BLOCKED = [
