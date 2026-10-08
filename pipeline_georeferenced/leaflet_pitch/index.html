@@ -185,7 +185,7 @@
     accuracyNote.textContent = aoi
       ? `Overlaps ${aoi.name}: accuracy there was measured offline vs ICESat-2 (RMSE ${aoi.rmse_canopy_top_m} m vs canopy top, ` +
         `${aoi.rmse_ground_m} m vs ground), not for this exact box.`
-      : 'Terrain from Copernicus DEM; accuracy not validated for this area.';
+      : 'Terrain from the Copernicus DEM. The published accuracy figures apply to the full validated areas (Nainital, Bangalore), not to this selection.';
     generateBtn.disabled = bad || running;
   }
 

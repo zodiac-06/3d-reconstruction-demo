@@ -16,7 +16,7 @@ Checks:
 - a 400 shows the server's detail; a failed job shows the server's error;
   a 500 while polling is reported; Generate can't be submitted twice;
 - the accuracy note: a box matching Nainital names the precomputed result,
-  a box elsewhere says accuracy is not validated;
+  a box elsewhere says the published figures apply to the validated areas;
 - the existing AOI rectangle's "Open 3D terrain" link still works.
 
 Needs Playwright with its Chromium (pip install playwright; playwright
@@ -217,7 +217,7 @@ def main():
             check("Overlaps Nainital" in note and "14.8" in note, f"box over Nainital names the precomputed result: {note!r}")
             draw(page, 73.83, 18.49, 73.89, 18.55)
             note = page.inner_text("#accuracy-note")
-            check(note == "Terrain from Copernicus DEM; accuracy not validated for this area.", f"box elsewhere: {note!r}")
+            check(note == "Terrain from the Copernicus DEM. The published accuracy figures apply to the full validated areas (Nainital, Bangalore), not to this selection.", f"box elsewhere: {note!r}")
 
             # 4. a 400 from the server shows its detail and lets the user try again
             page.route("**/jobs?wait=false", lambda r: r.fulfill(status=400, content_type="application/json",
