@@ -286,6 +286,35 @@ def relative_depth_detail_layer(relative_depth, sigma_px):
     return np.where(valid, relative_depth - lowpass, np.nan)
 
 
+# Guards on the detail layer before it is added to the DEM. Measured on the
+# validated jobs (Nainital, Bangalore, a 0.10 degree Nainital box): every
+# |detail| > 5 m pixel sat within 100 m of the crop border, the worst at the
+# top-right corner (-121 m at Nainital), while the 99th percentile was ~1 m.
+DETAIL_BORDER_PX = 6     # linear fade to zero over the outer pixels of the crop
+DETAIL_CLIP_M = 3.0      # then clip what's left to +-this many metres
+MIN_ABS_SLOPE = 1e-6     # a Theil-Sen slope this flat means no depth signal: skip the layer
+
+
+def guard_detail_layer(detail, slope, border_px=DETAIL_BORDER_PX, clip_m=DETAIL_CLIP_M,
+                       min_abs_slope=MIN_ABS_SLOPE):
+    """(guarded detail, summary). Skips the layer (zeros) when |slope| <
+    min_abs_slope; otherwise fades it linearly to zero over the outer
+    border_px pixels (weight = distance to the nearest edge / border_px, so 0
+    on the edge) and clips the rest to +-clip_m. NaN stays NaN."""
+    detail = np.asarray(detail, dtype=np.float64)
+    finite = np.isfinite(detail)
+    if not abs(slope) >= min_abs_slope:
+        return np.where(finite, 0.0, np.nan), {"skipped": True, "reason": f"|slope| {abs(slope):.3g} < {min_abs_slope}",
+                                               "border_px": border_px, "clip_m": clip_m, "n_clipped": 0}
+    h, w = detail.shape
+    rows, cols = np.ogrid[:h, :w]
+    edge = np.minimum(np.minimum(rows, h - 1 - rows), np.minimum(cols, w - 1 - cols))
+    tapered = detail * np.clip(edge / border_px, 0.0, 1.0)
+    n_clipped = int(np.sum(finite & (np.abs(tapered) > clip_m)))
+    return np.clip(tapered, -clip_m, clip_m), {"skipped": False, "border_px": border_px, "clip_m": clip_m,
+                                               "n_clipped": n_clipped}
+
+
 def terrain_plus_detail_dsm(
     relative_depth,
     dst_transform,
@@ -327,6 +356,7 @@ def terrain_plus_detail_dsm(
 
     dy_m, dx_m = pixel_size_metres(dst_transform, dst_crs, relative_depth.shape)
     detail = relative_depth_detail_layer(slope * relative_depth, (detail_sigma_m / dy_m, detail_sigma_m / dx_m))
+    detail, guard = guard_detail_layer(detail, slope)
     dsm = fuse_terrain_and_ndsm(dem_on_grid, detail, s=s, offset=offset)
 
     theil_sen_dsm = apply_calibration(relative_depth, slope, intercept)
@@ -339,6 +369,7 @@ def terrain_plus_detail_dsm(
         "offset": offset,
         "detail_sigma_m": detail_sigma_m,
         "detail_std_m": float(np.nanstd(detail)),
+        "detail_guard": guard,
         "corr_fused_vs_theil_sen_dsm": float(np.corrcoef(dsm[both], theil_sen_dsm[both])[0, 1]),
     }
 

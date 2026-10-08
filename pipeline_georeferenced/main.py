@@ -345,6 +345,7 @@ def _run_pipeline(dem_source, sources, timings):
             "offset": info["offset"],
             "detail_sigma_m": info["detail_sigma_m"],
             "detail_std_m": info["detail_std_m"],
+            "detail_guard": info["detail_guard"],
             # Theil-Sen consistency check (Depth Anything vs. DEM, held out):
             "slope": info["theil_sen_slope"],
             "intercept": info["theil_sen_intercept"],
