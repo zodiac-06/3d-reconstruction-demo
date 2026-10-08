@@ -4,7 +4,9 @@ Runs every test script in this pipeline and prints one line each.
     python run_tests.py
 
 Needs requirements.txt plus httpx (FastAPI's test client), uvicorn, and
-node >= 18 on PATH for the viewer tests. No model weights or network.
+node >= 18 on PATH for the viewer tests. No model weights. test_map_select.py
+also needs Playwright's Chromium (playwright install chromium) and network
+access to unpkg.com for Leaflet.
 """
 import subprocess
 import sys
@@ -22,6 +24,8 @@ TESTS = [
     "test_concurrency.py",
     "test_static_files.py",
     "test_analysis_layers.py",
+    "test_map_select.py",
+    "test_nan_metrics.py",
 ]
 
 

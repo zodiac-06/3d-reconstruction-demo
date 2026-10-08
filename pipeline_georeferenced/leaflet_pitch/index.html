@@ -8,6 +8,7 @@
 <style>
   html, body { margin: 0; height: 100%; background: #0b0c10; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
   #map { position: fixed; inset: 0; top: var(--nav-h, 0px); }
+  #map.selecting { cursor: crosshair; }
   .panel {
     position: fixed; z-index: 1000; top: calc(var(--nav-h, 0px) + 16px); left: 16px;
     background: rgba(15, 17, 21, 0.85); border: 1px solid rgba(255,255,255,0.1);
@@ -15,6 +16,7 @@
     max-width: 320px; box-shadow: 0 4px 24px rgba(0,0,0,0.35);
   }
   .panel h1 { margin: 0 0 6px; font-size: 15px; }
+  .panel h2 { margin: 14px 0 6px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13px; }
   .panel p { margin: 4px 0; font-size: 12px; color: #9aa0a6; line-height: 1.4; }
   .panel code { color: #4fc3f7; font-size: 11px; }
   #open-3d {
@@ -25,6 +27,21 @@
   }
   #open-3d:hover { background: #7bd3fa; }
   #open-3d.disabled { background: #444; color: #999; pointer-events: none; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row button { flex: 1; padding: 9px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.15); background: #263238; color: #4fc3f7; }
+  .row button:hover:not(:disabled) { background: #37474f; }
+  .row button.active { background: #4fc3f7; color: #0b0c10; }
+  #generate { background: #4fc3f7; color: #0b0c10; border-color: transparent; }
+  #generate:hover:not(:disabled) { background: #7bd3fa; }
+  .row button:disabled { background: #333; color: #888; border-color: transparent; cursor: not-allowed; }
+  #box-info.over { color: #ff6b6b; }
+  #box-info b { color: #e8eaed; font-weight: 600; }
+  #box-info.over b { color: #ff6b6b; }
+  #accuracy-note { color: #ffd54f; }
+  #job-status { min-height: 1em; }
+  #job-status.failed { color: #ff6b6b; }
+  #job-status.done { color: #81c784; }
   #status { position: fixed; z-index: 1000; bottom: 16px; left: 16px; font-size: 12px; color: #ff6b6b; display: none; max-width: 420px; background: rgba(15,17,21,0.85); padding: 10px 14px; border-radius: 8px; }
 </style>
 <script src="/site/nav.js" defer></script>
@@ -35,11 +52,32 @@
   <h1 id="aoi-title">AOI context map</h1>
   <p id="aoi-summary">Loading real AOI bounds from <code>geo_metadata.json</code>…</p>
   <a id="open-3d" class="disabled" href="../3d_visualization/index.html">Open 3D terrain flythrough →</a>
+
+  <h2>3D terrain for a new area</h2>
+  <p>Select an area, then drag a rectangle on the map.</p>
+  <div class="row">
+    <button type="button" id="select-toggle">Select area</button>
+    <button type="button" id="generate" disabled>Generate 3D</button>
+  </div>
+  <p id="box-info">No area selected.</p>
+  <p id="accuracy-note"></p>
+  <p id="job-status"></p>
 </div>
 <div id="status"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/validation/headline.js"></script>
 <script>
+  // Largest box (degrees per side) the page will submit. Measured with the
+  // real pipeline: a 0.10 degree box (985 x 1121 px) took 18.6 s end to end;
+  // larger boxes were not measured, so they aren't offered. The server's own
+  // limit is 0.5 degrees (main.py MAX_BOUNDS_SIDE_DEG).
+  const MAX_SIDE_DEG = 0.10;
+  // Smallest box (degrees per side): below this a crop is only ~200 px across,
+  // too little for the depth model and DEM fusion to be meaningful.
+  const MIN_SIDE_DEG = 0.02;
+  const POLL_MS = 2000;
+
   function showError(message) {
     const el = document.getElementById('status');
     el.textContent = message;
@@ -95,6 +133,132 @@
       showError(`Failed to load AOI metadata: ${err.message}`);
     }
   })();
+
+  // ----- Select an area and generate its 3D terrain -----
+  const mapEl = document.getElementById('map');
+  const selectBtn = document.getElementById('select-toggle');
+  const generateBtn = document.getElementById('generate');
+  const boxInfo = document.getElementById('box-info');
+  const accuracyNote = document.getElementById('accuracy-note');
+  const jobStatus = document.getElementById('job-status');
+
+  let selecting = false, dragStart = null, selRect = null, box = null, running = false;
+
+  // Accuracy label: the precomputed ICESat-2 rows and their half-overlap rule
+  // (validation/headline.js), the same match the upload page uses.
+  let precomputed = null;
+  fetch('/validation/icesat2_precomputed.json').then(r => (r.ok ? r.json() : null))
+    .then(t => { precomputed = t; updateBox(); }).catch(() => {});
+
+  function setSelecting(on) {
+    selecting = on;
+    selectBtn.classList.toggle('active', on);
+    selectBtn.textContent = on ? 'Drag on the map…' : 'Select area';
+    mapEl.classList.toggle('selecting', on);
+    // Leaflet starts a pan on mousedown, so dragging is off for the whole select mode.
+    if (on) map.dragging.disable(); else map.dragging.enable();
+  }
+
+  function sizeKm(b) {
+    const midLat = (b.south + b.north) / 2 * Math.PI / 180;
+    return { w: (b.east - b.west) * 111.32 * Math.cos(midLat), h: (b.north - b.south) * 110.57 };
+  }
+
+  function updateBox() {
+    if (!box) {
+      boxInfo.textContent = 'No area selected.';
+      boxInfo.classList.remove('over');
+      accuracyNote.textContent = '';
+      generateBtn.disabled = true;
+      return;
+    }
+    const dLon = box.east - box.west, dLat = box.north - box.south, km = sizeKm(box);
+    const over = dLon > MAX_SIDE_DEG || dLat > MAX_SIDE_DEG;
+    const under = !over && (dLon < MIN_SIDE_DEG || dLat < MIN_SIDE_DEG);
+    const bad = over || under;
+    boxInfo.classList.toggle('over', bad);
+    boxInfo.innerHTML = `<b>${km.w.toFixed(2)} × ${km.h.toFixed(2)} km</b> (${dLon.toFixed(4)}° × ${dLat.toFixed(4)}°)` +
+      (over ? `<br>Too large: at most ${MAX_SIDE_DEG}° per side, so processing stays under about a minute.` : '') +
+      (under ? `<br>Too small: at least ${MIN_SIDE_DEG} degrees per side` : '');
+    if (selRect) selRect.setStyle({ color: bad ? '#ff6b6b' : '#ffd54f', fillColor: bad ? '#ff6b6b' : '#ffd54f' });
+    const aoi = precomputed && typeof matchPrecomputedAoi === 'function' ? matchPrecomputedAoi(box, precomputed) : null;
+    accuracyNote.textContent = aoi
+      ? `Overlaps ${aoi.name}: accuracy there was measured offline vs ICESat-2 (RMSE ${aoi.rmse_canopy_top_m} m vs canopy top, ` +
+        `${aoi.rmse_ground_m} m vs ground), not for this exact box.`
+      : 'Terrain from the Copernicus DEM. The published accuracy figures apply to the full validated areas (Nainital, Bangalore), not to this selection.';
+    generateBtn.disabled = bad || running;
+  }
+
+  function boxFrom(a, b) {
+    const ll = L.latLngBounds(a, b);
+    return { west: ll.getWest(), south: ll.getSouth(), east: ll.getEast(), north: ll.getNorth() };
+  }
+
+  function drawBox(a, b) {
+    box = boxFrom(a, b);
+    const ll = [[box.south, box.west], [box.north, box.east]];
+    if (selRect) selRect.setBounds(ll);
+    else selRect = L.rectangle(ll, { weight: 2, fillOpacity: 0.15, interactive: false }).addTo(map);
+    updateBox();
+  }
+
+  selectBtn.addEventListener('click', () => { if (!running) setSelecting(!selecting); });
+  map.on('mousedown', e => {
+    if (!selecting) return;
+    dragStart = e.latlng;
+    drawBox(dragStart, dragStart);
+  });
+  map.on('mousemove', e => { if (selecting && dragStart) drawBox(dragStart, e.latlng); });
+  map.on('mouseup', e => {
+    if (!selecting || !dragStart) return;
+    drawBox(dragStart, e.latlng);
+    dragStart = null;
+    setSelecting(false);  // restores map dragging
+  });
+
+  function setJobStatus(text, cls = '') {
+    jobStatus.textContent = text;
+    jobStatus.className = cls;
+  }
+
+  async function generate() {
+    if (running || !box || generateBtn.disabled) return;
+    running = true;
+    generateBtn.disabled = true;
+    selectBtn.disabled = true;
+    setJobStatus('Submitting…');
+    const form = new FormData();
+    for (const k of ['west', 'south', 'east', 'north']) form.append(k, box[k].toFixed(6));
+    const t0 = Date.now();
+    try {
+      const res = await fetch('/jobs?wait=false', { method: 'POST', body: form });
+      let job = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`Rejected (HTTP ${res.status}): ${job.detail || res.statusText}`);
+      while (job.status === 'queued' || job.status === 'running') {
+        const secs = Math.round((Date.now() - t0) / 1000);
+        setJobStatus(job.status === 'queued' ? `Queued behind another job… ${secs} s`
+          : `Running: Sentinel-2 fetch, DEM, depth model, fusion… ${secs} s`);
+        await new Promise(r => setTimeout(r, POLL_MS));
+        const poll = await fetch(`/jobs/${encodeURIComponent(job.id)}`);
+        if (!poll.ok) {
+          const body = await poll.json().catch(() => ({}));
+          throw new Error(`Server error reading job ${job.id} (HTTP ${poll.status}): ${body.detail || poll.statusText}`);
+        }
+        job = await poll.json();
+      }
+      if (job.status !== 'done') throw new Error(`Job failed: ${job.error || 'no error message from the server'}`);
+      setJobStatus(`Done in ${Math.round((Date.now() - t0) / 1000)} s. Opening the 3D terrain…`, 'done');
+      // The viewer draws the latest job's output; ?job= ties its confidence and
+      // provenance layers to this job (3d_visualization/index.html findJob).
+      location.href = `/3d_visualization/index.html?job=${encodeURIComponent(job.id)}`;
+    } catch (err) {
+      setJobStatus(err.message, 'failed');
+      running = false;
+      selectBtn.disabled = false;
+      updateBox();
+    }
+  }
+  generateBtn.addEventListener('click', generate);
 </script>
 </body>
 </html>
