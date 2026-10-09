@@ -23,23 +23,34 @@ import rasterio
 import requests
 from rasterio.warp import transform_bounds
 from rasterio.windows import from_bounds
+from shapely.geometry import box, mapping, shape
 
-from aoi_config import buffered_bbox
+from aoi_config import AOI_BBOX, buffered_bbox
 
 STAC_ENDPOINT = "https://earth-search.aws.element84.com/v1/search"
 OUT_DIR = os.path.join(os.path.dirname(__file__), "data")
 OUT_PATH = os.path.join(OUT_DIR, "raw_source.tif")
 
 
-def find_scene(bbox, max_cloud=15, date_range="2025-01-01T00:00:00Z/2026-09-16T23:59:59Z"):
-    """Query Earth Search for the least-cloudy Sentinel-2 L2A scene over bbox."""
+class SceneCoverageError(ValueError):
+    """No single Sentinel-2 scene covers the whole requested box."""
+
+
+def find_scene(bbox, max_cloud=15, date_range="2025-01-01T00:00:00Z/2026-09-16T23:59:59Z", cover=None):
+    """The least-cloudy Sentinel-2 L2A scene whose footprint fully contains
+    `cover` (default: bbox). Searching by bbox alone ranked neighbouring tiles
+    that only touch the box first: for a box at Moga (30.80N 75.17E) every
+    one of the 20 least-cloudy scenes missed it, and the crop failed.
+    Raises SceneCoverageError if no matching scene covers it (the box
+    crosses a tile boundary); scenes are not mosaicked."""
+    cover = tuple(cover or bbox)
     payload = {
         "collections": ["sentinel-2-l2a"],
-        "bbox": list(bbox),
+        "intersects": mapping(box(*cover)),
         "datetime": date_range,
         "query": {"eo:cloud_cover": {"lt": max_cloud}},
         "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}],
-        "limit": 5,
+        "limit": 100,
     }
     resp = requests.post(STAC_ENDPOINT, json=payload, timeout=60)
     print("API STATUS:", resp.status_code); print("API RESPONSE:", resp.text[:2000]); resp.raise_for_status()
@@ -49,7 +60,15 @@ def find_scene(bbox, max_cloud=15, date_range="2025-01-01T00:00:00Z/2026-09-16T2
             "No Sentinel-2 scenes found for this AOI/date range/cloud filter. "
             "Widen date_range or raise max_cloud in find_scene()."
         )
-    best = features[0]
+    target = box(*cover)
+    covering = [f for f in features if shape(f["geometry"]).contains(target)]
+    if not covering:
+        w, s, e, n = cover
+        raise SceneCoverageError(
+            f"The box ({w:.4f}, {s:.4f}, {e:.4f}, {n:.4f}) crosses a Sentinel-2 tile boundary: none of "
+            f"the {len(features)} matching scenes covers all of it. Choose a different box, e.g. move "
+            f"it a few km so it lies inside one tile.")
+    best = covering[0]
     print(
         f"Selected scene: {best['id']}  "
         f"(cloud cover {best['properties'].get('eo:cloud_cover'):.1f}%, "
@@ -98,7 +117,7 @@ def download_cropped(scene, bbox, out_path=OUT_PATH):
 
 if __name__ == "__main__":
     bbox = buffered_bbox()
-    scene = find_scene(bbox)
+    scene = find_scene(bbox, cover=AOI_BBOX)
     download_cropped(scene, bbox)
 
 

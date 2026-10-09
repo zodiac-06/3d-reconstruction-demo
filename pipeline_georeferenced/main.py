@@ -241,6 +241,12 @@ def _resolve_input_mode(geotiff, bounds):
         detail="Send a GeoTIFF, bounds (west/south/east/north), or both -- see README.md")
 
 
+def _buffered(bounds):
+    w, s, e, n = bounds
+    b = SOURCE_BUFFER_DEG
+    return (w - b, s - b, e + b, n + b)
+
+
 def _prepare_cropped_input(mode, geotiff, bounds, timings):
     """Write data/aoi_cropped.tif for the given input mode. Returns a dict
     describing where it came from (stored on the job)."""
@@ -264,11 +270,9 @@ def _prepare_cropped_input(mode, geotiff, bounds, timings):
 
     # fetch_by_bounds: same buffered-scene-then-crop flow as running
     # 01_fetch_geotiff.py then 02_crop_geotiff.py by hand.
-    w, s, e, n = bounds
-    b = SOURCE_BUFFER_DEG
-    buffered = (w - b, s - b, e + b, n + b)
+    buffered = _buffered(bounds)
     _tick(timings, "stac_search")
-    scene = fetch_geotiff_mod.find_scene(buffered)
+    scene = fetch_geotiff_mod.find_scene(buffered, cover=bounds)  # SceneCoverageError -> job failed, with its message
     _tick(timings, "stac_download")
     fetch_geotiff_mod.download_cropped(scene, buffered, out_path=str(STAC_SOURCE_PATH))
     _tick(timings, "crop")
@@ -411,6 +415,16 @@ def create_job(
         raise HTTPException(status_code=400, detail=str(e))
     bounds = _parse_bounds(west, south, east, north)
     mode = _resolve_input_mode(geotiff, bounds)
+    if mode == "fetch_by_bounds" and not wait:
+        # A queued job can't answer 400 later, so check scene coverage now.
+        # Anything else (no scenes, STAC unreachable) is left to the job,
+        # which fails with that message as before.
+        try:
+            fetch_geotiff_mod.find_scene(_buffered(bounds), cover=bounds)
+        except fetch_geotiff_mod.SceneCoverageError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception:
+            pass
 
     job_id = str(uuid4())
     with _JOBS_LOCK:

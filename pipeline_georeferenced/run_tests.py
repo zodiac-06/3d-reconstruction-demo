@@ -27,6 +27,7 @@ TESTS = [
     "test_analysis_layers.py",
     "test_map_select.py",
     "test_nan_metrics.py",
+    "test_scene_cover.py",
 ]
 
 
